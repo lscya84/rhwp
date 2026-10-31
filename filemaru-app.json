@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "hangul",
+  "name": "한글",
+  "summary": "HWP · HWPX 문서 열람",
+  "version": "0.8.7",
+  "license": "MIT",
+  "repo": "edwardkim/rhwp",
+  "extensions": [
+    "hwp",
+    "hwpx"
+  ],
+  "adapter": "filemaru:hangul",
+  "package_url": "https://github.com/lscya84/rhwp"
+}
