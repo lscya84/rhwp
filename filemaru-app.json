@@ -2,13 +2,14 @@
   "schema": 1,
   "id": "hangul",
   "name": "한글",
-  "summary": "HWP · HWPX 문서 열람",
+  "summary": "HWP · HWPX · HML 문서 편집 · 파일마루 전용 RHWP",
   "version": "0.8.7",
   "license": "MIT",
   "repo": "edwardkim/rhwp",
   "extensions": [
     "hwp",
-    "hwpx"
+    "hwpx",
+    "hml"
   ],
   "adapter": "filemaru:hangul",
   "package_url": "https://github.com/lscya84/rhwp"

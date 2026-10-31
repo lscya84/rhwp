@@ -1,5 +1,7 @@
 import type { EventBus } from '@/core/event-bus';
 import type { CommandDispatcher } from '@/command/dispatcher';
+import type { CommandRegistry } from '@/command/registry';
+import { syncMenuShortcutLabels } from './menu-shortcut-labels';
 
 /**
  * 메뉴바 드롭다운 컨트롤러
@@ -10,16 +12,27 @@ import type { CommandDispatcher } from '@/command/dispatcher';
  * - 항목 클릭 → CommandDispatcher 경유 실행
  * - 드롭다운 열릴 때 컨텍스트 감응 활성/비활성 갱신
  */
+/** MenuBar 옵션 */
+export interface MenuBarOptions {
+  /** 드롭다운 메뉴가 열릴 때 호출 (동적 하위 항목 렌더 등). menuName = data-menu 값. */
+  onMenuOpen?: (menuName: string, menuEl: HTMLElement) => void;
+}
+
 export class MenuBar {
   private menuItems: HTMLElement[];
   private openMenu: HTMLElement | null = null;
+  private onMenuOpen?: (menuName: string, menuEl: HTMLElement) => void;
 
   constructor(
     private container: HTMLElement,
     private eventBus: EventBus,
     private dispatcher: CommandDispatcher,
+    registry: CommandRegistry,
+    options: MenuBarOptions = {},
   ) {
+    this.onMenuOpen = options.onMenuOpen;
     this.menuItems = Array.from(container.querySelectorAll('.menu-item'));
+    syncMenuShortcutLabels(container, registry);
     this.setupTitleClicks();
     this.setupTitleHover();
     this.setupItemClicks();
@@ -41,6 +54,7 @@ export class MenuBar {
           item.classList.add('open');
           this.openMenu = item;
           this.updateMenuStates(item);
+          this.onMenuOpen?.(item.dataset.menu ?? '', item);
         }
       });
     }
@@ -57,15 +71,18 @@ export class MenuBar {
           item.classList.add('open');
           this.openMenu = item;
           this.updateMenuStates(item);
+          this.onMenuOpen?.(item.dataset.menu ?? '', item);
         }
       });
     }
   }
 
-  /** 드롭다운 항목 클릭 → 커맨드 디스패치 + 닫기 */
+  /** 드롭다운 항목·메뉴바 직접 버튼 클릭 → 커맨드 디스패치 + 닫기 */
   private setupItemClicks(): void {
     this.container.addEventListener('click', (e) => {
-      const target = (e.target as HTMLElement).closest('.md-item') as HTMLElement;
+      const target = (e.target as HTMLElement).closest(
+        '.md-item[data-cmd], .menu-command[data-cmd]',
+      ) as HTMLElement;
       if (!target) return;
       if (target.classList.contains('disabled')) return;
 
@@ -92,11 +109,35 @@ export class MenuBar {
     });
   }
 
-  /** Escape 키 → 닫기 */
+  /** 메뉴 열린 상태 키보드 처리: Escape 닫기 + 단일 키 hotkey 항목 활성 (#792) */
   private setupKeyboardClose(): void {
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.openMenu) {
+      if (!this.openMenu) return;
+      if (e.key === 'Escape') {
         this.closeAll();
+        return;
+      }
+      // 메뉴 열린 상태에서 단일 키 (modifier 없음) → shortcutLabel 매칭
+      if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      if (e.key.length !== 1) return;
+      const key = e.key.toUpperCase();
+      const items = this.openMenu.querySelectorAll('.md-item[data-cmd]:not(.disabled)');
+      for (const item of items) {
+        const shortcut = item.querySelector('.md-shortcut');
+        if (shortcut && shortcut.textContent?.toUpperCase() === key) {
+          e.preventDefault();
+          const el = item as HTMLElement;
+          const cmd = el.dataset.cmd;
+          if (cmd) {
+            const params: Record<string, unknown> = { anchorEl: item };
+            for (const [k, v] of Object.entries(el.dataset)) {
+              if (k !== 'cmd') params[k] = v;
+            }
+            this.dispatcher.dispatch(cmd, params);
+          }
+          this.closeAll();
+          return;
+        }
       }
     });
   }
@@ -110,10 +151,7 @@ export class MenuBar {
       const cmdId = el.dataset.cmd!;
       const enabled = this.dispatcher.isEnabled(cmdId);
       el.classList.toggle('disabled', !enabled);
-      // #196: file:save 가 비활성이면 베타 안내 툴팁 표시
-      if (cmdId === 'file:save' && !enabled) {
-        el.title = 'HWPX 직접 저장은 현재 베타 단계로 비활성화되어 있습니다. 다음 업데이트에서 지원 예정입니다.';
-      } else if (cmdId === 'file:save') {
+      if (cmdId === 'file:save') {
         el.removeAttribute('title');
       }
     }

@@ -5,8 +5,16 @@
  */
 import type { CommandServices } from '@/command/types';
 import type { BookmarkInfo } from '@/core/types';
+import { enableDialogDrag } from './dialog-drag';
 
+import { t } from '../i18n/index.ts';
 type SortMode = 'name' | 'position';
+
+// [Task #2862] 책갈피 이름은 HWP5 CTRL_DATA 레코드에서 u16 길이 프리픽스로 직렬화된다
+// (`src/serializer/control.rs`의 `serialize_bookmark_ctrl_data`, `utf16.len() as u16`).
+// UTF-16 코드 유닛 65536개 이상이면 길이 프리픽스가 랩어라운드되어 저장 파일이 손상되므로
+// (#2851/#2854와 동일한 원인), 프런트엔드에서 여유를 둔 상한으로 미리 차단한다.
+export const MAX_BOOKMARK_NAME_LEN = 250;
 
 export class BookmarkDialog {
   private services: CommandServices;
@@ -42,6 +50,11 @@ export class BookmarkDialog {
     };
     document.addEventListener('keydown', this.captureHandler, true);
 
+    // 싱글턴으로 재사용되는데 build() 가 라디오를 매번 '위치(P)' 체크 상태로 새로
+    // 만들므로, 이전 세션의 sortMode('name')가 남으면 라디오 표시와 실제 목록
+    // 정렬이 어긋난다 — 라디오 초기 상태와 일치하도록 리셋한다. (#3144)
+    this.sortMode = 'position';
+
     this.refreshList();
     this.suggestName();
     this.nameInput.focus();
@@ -70,13 +83,14 @@ export class BookmarkDialog {
     // 타이틀
     const titleBar = document.createElement('div');
     titleBar.className = 'dialog-title';
-    titleBar.textContent = '책갈피';
+    titleBar.textContent = t('dialog.bookmark.titleBar.text');
     const closeBtn = document.createElement('button');
     closeBtn.className = 'dialog-close';
     closeBtn.textContent = '\u00D7';
     closeBtn.addEventListener('click', () => this.hide());
     titleBar.appendChild(closeBtn);
     this.dialog.appendChild(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
 
     // 본문
     const body = document.createElement('div');
@@ -87,10 +101,11 @@ export class BookmarkDialog {
     nameRow.className = 'bm-row';
     const nameLabel = document.createElement('label');
     nameLabel.className = 'bm-label';
-    nameLabel.textContent = '책갈피 이름(N):';
+    nameLabel.textContent = t('dialog.bookmark.nameLabel.text');
     this.nameInput = document.createElement('input');
     this.nameInput.type = 'text';
     this.nameInput.className = 'bm-name-input';
+    this.nameInput.maxLength = MAX_BOOKMARK_NAME_LEN;
     this.nameInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); this.doAdd(); }
     });
@@ -106,17 +121,17 @@ export class BookmarkDialog {
     listCol.className = 'bm-list-col';
     const listLabel = document.createElement('div');
     listLabel.className = 'bm-label';
-    listLabel.textContent = '책갈피 목록(L):';
+    listLabel.textContent = t('dialog.bookmark.listLabel.text');
     listCol.appendChild(listLabel);
 
     // 목록 헤더
     const listHeader = document.createElement('div');
     listHeader.className = 'bm-list-header';
     const hName = document.createElement('span');
-    hName.textContent = '이름';
+    hName.textContent = t('dialog.bookmark.hName.text');
     hName.className = 'bm-list-hcol';
     const hType = document.createElement('span');
-    hType.textContent = '종류';
+    hType.textContent = t('dialog.bookmark.hType.text');
     hType.className = 'bm-list-hcol bm-list-hcol-type';
     listHeader.appendChild(hName);
     listHeader.appendChild(hType);
@@ -137,10 +152,10 @@ export class BookmarkDialog {
     // 버튼 컬럼
     const btnCol = document.createElement('div');
     btnCol.className = 'bm-btn-col';
-    const addBtn = this.createButton('넣기(D)', () => this.doAdd());
+    const addBtn = this.createButton(t('dialog.bookmark.createButton.label'), () => this.doAdd());
     addBtn.classList.add('dialog-btn-primary');
-    const cancelBtn = this.createButton('취소', () => this.hide());
-    const moveBtn = this.createButton('이동(M)', () => this.doMove());
+    const cancelBtn = this.createButton(t('dialog.bookmark.createButton.label.x14bc24'), () => this.hide());
+    const moveBtn = this.createButton(t('dialog.bookmark.createButton.label.xd57835'), () => this.doMove());
     btnCol.appendChild(addBtn);
     btnCol.appendChild(cancelBtn);
     btnCol.appendChild(moveBtn);
@@ -153,12 +168,12 @@ export class BookmarkDialog {
     iconRow.className = 'bm-icon-row';
     const renameBtn = document.createElement('button');
     renameBtn.className = 'bm-icon-btn';
-    renameBtn.title = '책갈피 이름 바꾸기';
+    renameBtn.title = t('dialog.bookmark.renameBtn.tooltip');
     renameBtn.textContent = '✏';
     renameBtn.addEventListener('click', () => this.doRename());
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'bm-icon-btn';
-    deleteBtn.title = '삭제';
+    deleteBtn.title = t('dialog.bookmark.deleteBtn.tooltip');
     deleteBtn.textContent = '✕';
     deleteBtn.addEventListener('click', () => this.doDelete());
     iconRow.appendChild(renameBtn);
@@ -170,7 +185,7 @@ export class BookmarkDialog {
     sortRow.className = 'bm-sort-row';
     const sortLabel = document.createElement('span');
     sortLabel.className = 'bm-label';
-    sortLabel.textContent = '책갈피 정렬 기준';
+    sortLabel.textContent = t('dialog.bookmark.sortLabel.text');
     sortRow.appendChild(sortLabel);
 
     const radioName = document.createElement('label');
@@ -179,7 +194,7 @@ export class BookmarkDialog {
     rName.type = 'radio'; rName.name = 'bm-sort'; rName.value = 'name';
     rName.addEventListener('change', () => { this.sortMode = 'name'; this.refreshList(); });
     radioName.appendChild(rName);
-    radioName.appendChild(document.createTextNode(' 이름(A)'));
+    radioName.appendChild(document.createTextNode(t('dialog.bookmark.build.text')));
 
     const radioPos = document.createElement('label');
     radioPos.className = 'bm-radio';
@@ -187,7 +202,7 @@ export class BookmarkDialog {
     rPos.type = 'radio'; rPos.name = 'bm-sort'; rPos.value = 'position'; rPos.checked = true;
     rPos.addEventListener('change', () => { this.sortMode = 'position'; this.refreshList(); });
     radioPos.appendChild(rPos);
-    radioPos.appendChild(document.createTextNode(' 위치(P)'));
+    radioPos.appendChild(document.createTextNode(t('dialog.bookmark.build.text.xf5e9d1')));
 
     sortRow.appendChild(radioName);
     sortRow.appendChild(radioPos);
@@ -195,9 +210,6 @@ export class BookmarkDialog {
 
     this.dialog.appendChild(body);
     this.overlay.appendChild(this.dialog);
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.hide();
-    });
   }
 
   private createButton(text: string, handler: () => void): HTMLButtonElement {
@@ -217,13 +229,13 @@ export class BookmarkDialog {
     }
     // position은 이미 문서 순서대로 반환됨
 
-    this.listEl.innerHTML = '';
+    this.listEl.replaceChildren();
     this.selectedIdx = -1;
 
     if (this.bookmarks.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'bm-empty';
-      empty.textContent = '최근에 등록한 [책갈피]가 없습니다.\n사용자가 편집 문서에 책갈피를 삽입하면 [책갈피 목록]에 등록됩니다.';
+      empty.textContent = t('dialog.bookmark.empty.text');
       this.listEl.appendChild(empty);
       return;
     }
@@ -234,10 +246,10 @@ export class BookmarkDialog {
       row.className = 'bm-item';
       const nameSpan = document.createElement('span');
       nameSpan.className = 'bm-item-name';
-      nameSpan.textContent = bm.name || '(이름 없음)';
+      nameSpan.textContent = bm.name || t('dialog.bookmark.nameSpan.text');
       const typeSpan = document.createElement('span');
       typeSpan.className = 'bm-item-type';
-      typeSpan.textContent = '위치';
+      typeSpan.textContent = t('dialog.bookmark.typeSpan.text');
       row.appendChild(nameSpan);
       row.appendChild(typeSpan);
       row.addEventListener('click', () => this.selectItem(i));
@@ -271,7 +283,12 @@ export class BookmarkDialog {
   private doAdd(): void {
     const name = this.nameInput.value.trim();
     if (!name) {
-      this.statusLabel.textContent = '책갈피 이름을 입력하세요.';
+      this.statusLabel.textContent = t('dialog.bookmark.statusLabel.text');
+      this.statusLabel.style.color = '#c00';
+      return;
+    }
+    if (name.length > MAX_BOOKMARK_NAME_LEN) {
+      this.statusLabel.textContent = t('dialog.bookmark.statusLabel.text.x5fcb7e', { p1: MAX_BOOKMARK_NAME_LEN });
       this.statusLabel.style.color = '#c00';
       return;
     }
@@ -280,16 +297,25 @@ export class BookmarkDialog {
     if (!ih) return;
     const pos = ih.getCursorPosition();
 
-    const result = this.services.wasm.addBookmark(
-      pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name,
-    );
+    // [책갈피 이관] 추가를 snapshot 으로 라우팅해 undo 가능(기존 emit-only → 되돌릴 수 없었음).
+    let ok = false;
+    let errMsg: string | undefined;
+    ih.executeOperation({
+      kind: 'snapshot',
+      operationType: 'addBookmark',
+      operation: (wasm) => {
+        const r = wasm.addBookmark(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name);
+        ok = r.ok;
+        errMsg = r.error;
+        return pos;
+      },
+    });
 
-    if (result.ok) {
-      this.services.eventBus.emit('document-changed');
+    if (ok) {
       this.hide();
     } else {
       this.statusLabel.style.color = '#c00';
-      this.statusLabel.textContent = result.error ?? '책갈피 추가 실패';
+      this.statusLabel.textContent = errMsg ?? t('dialog.bookmark.statusLabel.text.x31f4ef');
     }
   }
 
@@ -317,11 +343,21 @@ export class BookmarkDialog {
     if (this.selectedIdx < 0 || this.selectedIdx >= this.bookmarks.length) return;
     const bm = this.bookmarks[this.selectedIdx];
 
-    if (!confirm(`선택한 책갈피 '${bm.name}'를 지울까요?`)) return;
+    if (!confirm(t('dialog.bookmark.doDelete.message', { p1: bm.name }))) return;
 
-    const result = this.services.wasm.deleteBookmark(bm.sec, bm.para, bm.ctrlIdx);
-    if (result.ok) {
-      this.services.eventBus.emit('document-changed');
+    const ih = this.services.getInputHandler();
+    if (!ih) return;
+    // [책갈피 이관] 삭제를 snapshot 으로 라우팅.
+    let ok = false;
+    ih.executeOperation({
+      kind: 'snapshot',
+      operationType: 'deleteBookmark',
+      operation: (wasm) => {
+        ok = wasm.deleteBookmark(bm.sec, bm.para, bm.ctrlIdx).ok;
+        return ih.getCursorPosition();
+      },
+    });
+    if (ok) {
       this.refreshList();
       this.statusLabel.textContent = '';
     }
@@ -332,14 +368,31 @@ export class BookmarkDialog {
     const bm = this.bookmarks[this.selectedIdx];
     const newName = prompt('새 책갈피 이름:', bm.name);
     if (!newName || newName.trim() === '' || newName === bm.name) return;
+    if (newName.trim().length > MAX_BOOKMARK_NAME_LEN) {
+      alert(t('dialog.bookmark.doRename.message', { p1: MAX_BOOKMARK_NAME_LEN }));
+      return;
+    }
 
-    const result = this.services.wasm.renameBookmark(bm.sec, bm.para, bm.ctrlIdx, newName.trim());
-    if (result.ok) {
-      this.services.eventBus.emit('document-changed');
+    const ih = this.services.getInputHandler();
+    if (!ih) return;
+    // [책갈피 이관] 이름 변경을 snapshot 으로 라우팅.
+    let ok = false;
+    let errMsg: string | undefined;
+    ih.executeOperation({
+      kind: 'snapshot',
+      operationType: 'renameBookmark',
+      operation: (wasm) => {
+        const r = wasm.renameBookmark(bm.sec, bm.para, bm.ctrlIdx, newName.trim());
+        ok = r.ok;
+        errMsg = r.error;
+        return ih.getCursorPosition();
+      },
+    });
+    if (ok) {
       this.refreshList();
     } else {
       this.statusLabel.style.color = '#c00';
-      this.statusLabel.textContent = result.error ?? '이름 변경 실패';
+      this.statusLabel.textContent = errMsg ?? t('dialog.bookmark.statusLabel.text.x3ec6b4');
     }
   }
 }

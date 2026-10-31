@@ -22,3 +22,29 @@ The adapter implementation and integration tests are maintained in the Filemaru 
 4. Publish only after validation. Deploy the verified adapter/service before advertising the new package version. On failure retain the previous engine and manifest.
 
 The App Store checks upstream releases; weekly host dependency update PRs remain enabled. No unreviewed upstream commit is automatically deployed.
+
+## 파일마루 전용 Studio (2026-10-31)
+
+`rhwp-studio/src`, `npm/editor`, shared UI and font assets are synchronized from
+upstream v0.8.7 (`1a76570e833917d15817415a53c09ad61ab3203f`). The Rust source in
+this fork is retained history, not the runtime build input: the Studio build pins
+`@rhwp/core@0.8.7`. Build with `cd rhwp-studio && npm ci && npm run build:filemaru`.
+
+This is a Filemaru-specific fork, not an externally hosted generic editor:
+`src/filemaru.ts` overrides file-open/save commands, validates the exact parent
+and origin, tracks revisions and handles host save completion. Full upstream web
+menus remain. HWP/HWPX/HML opening, supported conversion/export, formatting,
+tables, objects, pages, tools, undo/redo and printing use the upstream engine.
+Windows HwpCtrl OCX, browser extension integration and unsupported upstream
+conversions are not claimed as web features.
+
+Recent files, autosave and document history use an account-specific IndexedDB
+namespace supplied by the authenticated host. Browser-local recovery is not a
+server backup. External web fonts and PWA service workers are excluded from this
+build. Built fonts and MIT/third-party notices travel with the artifact.
+
+The host stores the checked build archive and exact source commit in
+`vendor/hangul-engine.json`; `prepare-hangul.mjs` verifies SHA-256 before embedding
+it into the Rust release. This allows existing single-binary deployment and
+rollback without a second application service. Source build and runtime are both
+pinned, and the host's rights/no-overwrite storage rules still apply.

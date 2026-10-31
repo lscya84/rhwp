@@ -47,12 +47,11 @@ export class FieldMarkerRenderer {
 
     const fontSize = startRect.height * zoom;
 
-    // 시작 마커 「 — 필드 시작점 왼쪽에 배치
+    // 시작 마커 「 — 필드 시작 경계에 맞춘다.
     const startPageOffset = this.virtualScroll.getPageOffset(startRect.pageIndex);
     const startPageLeft = this.calcPageLeft(startRect.pageIndex);
-    const markerWidth = fontSize * 0.6;
     this.startEl.style.fontSize = `${fontSize}px`;
-    this.startEl.style.left = `${startPageLeft + startRect.x * zoom - markerWidth}px`;
+    this.startEl.style.left = `${startPageLeft + startRect.x * zoom}px`;
     this.startEl.style.top = `${startPageOffset + startRect.y * zoom}px`;
     this.startEl.style.height = `${startRect.height * zoom}px`;
     this.startEl.style.display = 'block';
@@ -81,12 +80,9 @@ export class FieldMarkerRenderer {
 
   /** 페이지의 화면 X 좌표를 계산한다 */
   private calcPageLeft(pageIndex: number): number {
-    const gridLeft = this.virtualScroll.getPageLeft(pageIndex);
-    if (gridLeft >= 0) return gridLeft;
     const scrollContent = this.container.querySelector('#scroll-content');
     const contentWidth = scrollContent?.clientWidth ?? 0;
-    const pageDisplayWidth = this.virtualScroll.getPageWidth(pageIndex);
-    return (contentWidth - pageDisplayWidth) / 2;
+    return this.virtualScroll.getPageLeftResolved(pageIndex, contentWidth);
   }
 
   /** DOM에서 분리된 경우 재부착 */

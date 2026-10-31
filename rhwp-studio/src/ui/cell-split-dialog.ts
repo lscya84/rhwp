@@ -4,6 +4,9 @@
  * 한컴 셀 나누기 대화상자를 재현한다.
  * ModalDialog를 상속하지 않고 독립 빌드 (커스텀 버튼 텍스트 + 2단 레이아웃).
  */
+import { enableDialogDrag } from './dialog-drag';
+
+import { t } from '../i18n/index.ts';
 export class CellSplitDialog {
   onApply: ((nRows: number, mCols: number, equalHeight: boolean, mergeFirst: boolean) => void) | null = null;
 
@@ -45,9 +48,6 @@ export class CellSplitDialog {
     // 오버레이
     this.overlay = document.createElement('div');
     this.overlay.className = 'modal-overlay';
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.hide();
-    });
 
     // 다이얼로그
     this.dialog = document.createElement('div');
@@ -57,13 +57,14 @@ export class CellSplitDialog {
     // 타이틀 바
     const titleBar = document.createElement('div');
     titleBar.className = 'dialog-title';
-    titleBar.textContent = '셀 나누기';
+    titleBar.textContent = t('dialog.cellSplit.titleBar.text');
     const closeBtn = document.createElement('button');
     closeBtn.className = 'dialog-close';
     closeBtn.textContent = '\u00D7';
     closeBtn.addEventListener('click', () => this.hide());
     titleBar.appendChild(closeBtn);
     this.dialog.appendChild(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
 
     // 본문: 2단 레이아웃 (좌측=폼, 우측=버튼)
     const body = document.createElement('div');
@@ -86,7 +87,7 @@ export class CellSplitDialog {
 
     const splitTitle = document.createElement('div');
     splitTitle.className = 'dialog-section-title';
-    splitTitle.textContent = '줄/칸 나누기';
+    splitTitle.textContent = t('dialog.cellSplit.splitTitle.text');
     splitSection.appendChild(splitTitle);
 
     // 줄 수
@@ -98,7 +99,7 @@ export class CellSplitDialog {
     const rowLabel = document.createElement('label');
     rowLabel.htmlFor = 'csd-row-check';
     rowLabel.className = 'dialog-label';
-    rowLabel.textContent = '줄 수(R):';
+    rowLabel.textContent = t('dialog.cellSplit.rowLabel.text');
     rowLabel.style.textAlign = 'left';
     this.rowInput = document.createElement('input');
     this.rowInput.type = 'number';
@@ -126,7 +127,7 @@ export class CellSplitDialog {
     const colLabel = document.createElement('label');
     colLabel.htmlFor = 'csd-col-check';
     colLabel.className = 'dialog-label';
-    colLabel.textContent = '칸 수(C):';
+    colLabel.textContent = t('dialog.cellSplit.colLabel.text');
     colLabel.style.textAlign = 'left';
     this.colInput = document.createElement('input');
     this.colInput.type = 'number';
@@ -152,7 +153,7 @@ export class CellSplitDialog {
 
     const optTitle = document.createElement('div');
     optTitle.className = 'dialog-section-title';
-    optTitle.textContent = '선택 사항';
+    optTitle.textContent = t('dialog.cellSplit.optTitle.text');
     optSection.appendChild(optTitle);
 
     // 줄 높이를 같게 나누기
@@ -163,7 +164,7 @@ export class CellSplitDialog {
     this.equalHeightCheck.id = 'csd-eq-check';
     const eqLabel = document.createElement('label');
     eqLabel.htmlFor = 'csd-eq-check';
-    eqLabel.textContent = '줄 높이를 같게 나누기(H)';
+    eqLabel.textContent = t('dialog.cellSplit.eqLabel.text');
     eqRow.appendChild(this.equalHeightCheck);
     eqRow.appendChild(eqLabel);
     optSection.appendChild(eqRow);
@@ -177,7 +178,7 @@ export class CellSplitDialog {
     this.mergeFirstCheck.disabled = !this.isMerged;
     const mfLabel = document.createElement('label');
     mfLabel.htmlFor = 'csd-mf-check';
-    mfLabel.textContent = '셀을 합친 후 나누기(M)';
+    mfLabel.textContent = t('dialog.cellSplit.mfLabel.text');
     if (!this.isMerged) {
       mfLabel.style.color = '#999';
     }
@@ -190,13 +191,13 @@ export class CellSplitDialog {
     // --- 우측: 버튼 ---
     const applyBtn = document.createElement('button');
     applyBtn.className = 'dialog-btn dialog-btn-primary';
-    applyBtn.textContent = '나누기(D)';
+    applyBtn.textContent = t('dialog.cellSplit.applyBtn.text');
     applyBtn.style.minWidth = '80px';
     applyBtn.addEventListener('click', () => this.doApply());
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'dialog-btn';
-    cancelBtn.textContent = '취소';
+    cancelBtn.textContent = t('dialog.cellSplit.cancelBtn.text');
     cancelBtn.style.minWidth = '80px';
     cancelBtn.addEventListener('click', () => this.hide());
 

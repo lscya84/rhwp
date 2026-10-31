@@ -1,8 +1,14 @@
 import { ModalDialog } from './dialog';
+import { applyCommandThroughRouter } from './dialog-apply';
+import { SetCellBorderFillCommand } from '@/engine/command';
+import type { CellBorderFillTarget } from '@/engine/command';
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { CellProperties } from '@/core/types';
+import type { CellBbox, CellProperties } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
+import { t as i18nText } from '../i18n/index.ts';
+import { t } from '@/i18n/index.ts';
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
 function hwp16ToMm(hu: number): number {
@@ -13,12 +19,62 @@ function mmToHwp16(mm: number): number {
   return Math.round(mm * HWPUNIT_PER_MM);
 }
 
+const DOC_PAPER_COLOR = 'var(--doc-paper)';
+const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
+const LINE_SAMPLE_STROKE = 'currentColor';
+const DIAGONAL_LINE_TYPE_OPTIONS: string[][] = [
+  ['0', t('option.diagonalLineTypeOptions.0')],
+  ['1', t('option.diagonalLineTypeOptions.1')],
+  ['2', t('option.diagonalLineTypeOptions.2')],
+  ['3', t('option.diagonalLineTypeOptions.3')],
+  ['4', t('option.diagonalLineTypeOptions.4')],
+  ['5', t('option.diagonalLineTypeOptions.5')],
+  ['6', t('option.diagonalLineTypeOptions.6')],
+  ['7', t('option.diagonalLineTypeOptions.7')],
+  ['8', t('option.diagonalLineTypeOptions.8')],
+  ['9', t('option.diagonalLineTypeOptions.9')],
+  ['10', t('option.diagonalLineTypeOptions.10')],
+  ['11', t('option.diagonalLineTypeOptions.11')],
+  ['12', t('option.diagonalLineTypeOptions.12')],
+  ['13', t('option.diagonalLineTypeOptions.13')],
+  ['14', t('option.diagonalLineTypeOptions.14')],
+  ['15', t('option.diagonalLineTypeOptions.15')],
+  ['16', t('option.diagonalLineTypeOptions.16')],
+  ['17', t('option.diagonalLineTypeOptions.17')],
+];
+const DIAGONAL_WIDTH_OPTIONS: string[][] = [
+  ['0', '0.1mm'],
+  ['1', '0.12mm'],
+  ['2', '0.15mm'],
+  ['3', '0.2mm'],
+  ['4', '0.25mm'],
+  ['5', '0.3mm'],
+  ['6', '0.4mm'],
+  ['7', '0.5mm'],
+  ['8', '0.6mm'],
+  ['9', '0.7mm'],
+  ['10', '1.0mm'],
+  ['11', '1.5mm'],
+  ['12', '2.0mm'],
+  ['13', '3.0mm'],
+  ['14', '4.0mm'],
+  ['15', '5.0mm'],
+];
+const DIAGONAL_WIDTH_MM = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0];
+
+function diagonalPreviewWidthPx(widthIndex: number): number {
+  const mm = DIAGONAL_WIDTH_MM[widthIndex] ?? DIAGONAL_WIDTH_MM[0];
+  return Math.min(8, Math.max(0.8, mm * 2.6));
+}
+
 /** 탭 정의 */
 interface TabDef {
   id: string;
   label: string;
   builder: () => HTMLElement;
 }
+
+type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
 
 /**
  * 셀 테두리/배경 대화상자 (3탭: 테두리/배경/대각선)
@@ -32,6 +88,9 @@ export class CellBorderBgDialog extends ModalDialog {
   private tableCtx: { sec: number; ppi: number; ci: number };
   private cellIdx: number;
   private applyMode: 'each' | 'asOne';
+  private selectionRange: CellRange | null;
+  /** undo 기록 라우팅용 (없으면 wasm 직접 호출 fallback). */
+  private services: CommandServices | undefined;
 
   // 탭 UI
   private tabs: HTMLButtonElement[] = [];
@@ -66,6 +125,12 @@ export class CellBorderBgDialog extends ModalDialog {
   private diagWidthSelect!: HTMLSelectElement;
   private diagColorInput!: HTMLInputElement;
   private diagScopeRadios!: HTMLInputElement[];
+  private diagPreviewSvg!: SVGSVGElement;
+  private diagButtons: HTMLButtonElement[] = [];
+  private diagSlashBits = 0;
+  private diagBackSlashBits = 0;
+  private diagCenterLine = 'NONE';
+  private activeTabId = 'border';
 
   // 셀 속성 캐시
   private cellProps!: CellProperties;
@@ -76,40 +141,50 @@ export class CellBorderBgDialog extends ModalDialog {
     tableCtx: { sec: number; ppi: number; ci: number },
     cellIdx: number,
     applyMode: 'each' | 'asOne' = 'each',
+    selectionRange: CellRange | null = null,
+    services?: CommandServices,
   ) {
-    super('셀 테두리/배경', 460);
+    super(i18nText('dialog.cellBorderBg.diagonalPreviewWidthPx.title'), 460);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.tableCtx = tableCtx;
     this.cellIdx = cellIdx;
     this.applyMode = applyMode;
+    this.selectionRange = selectionRange;
+    this.services = services;
   }
 
   show(): void {
     super.show();
+    this.dialog.classList.add('tcp-border-bg-dialog');
     const { sec, ppi, ci } = this.tableCtx;
-    this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
+    this.cellProps = this.applyMode === 'each'
+      ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
+      : this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
     this.populateFields();
   }
 
   protected createBody(): HTMLElement {
     const body = document.createElement('div');
+    body.className = 'tcp-dialog-body';
 
     const tabDefs: TabDef[] = [
-      { id: 'border', label: '테두리', builder: () => this.buildBorderTab() },
-      { id: 'background', label: '배경', builder: () => this.buildBackgroundTab() },
-      { id: 'diagonal', label: '대각선', builder: () => this.buildDiagonalTab() },
+      { id: 'border', label: i18nText('dialog.cellBorderBg.createBody.label'), builder: () => this.buildBorderTab() },
+      { id: 'background', label: i18nText('dialog.cellBorderBg.createBody.label.x807c30'), builder: () => this.buildBackgroundTab() },
+      { id: 'diagonal', label: i18nText('dialog.cellBorderBg.createBody.label.x89bace'), builder: () => this.buildDiagonalTab() },
     ];
 
     // 탭 헤더
     const tabBar = document.createElement('div');
     tabBar.className = 'dialog-tabs';
     const panelContainer = document.createElement('div');
+    panelContainer.className = 'tcp-panel-container';
 
     for (let i = 0; i < tabDefs.length; i++) {
       const def = tabDefs[i];
       const btn = document.createElement('button');
       btn.className = 'dialog-tab';
+      btn.dataset.tab = def.id;
       btn.textContent = def.label;
       btn.type = 'button';
       btn.addEventListener('click', () => this.switchTab(i));
@@ -118,6 +193,7 @@ export class CellBorderBgDialog extends ModalDialog {
 
       const panel = document.createElement('div');
       panel.className = 'dialog-tab-panel';
+      panel.dataset.tab = def.id;
       panel.appendChild(def.builder());
       this.panels.push(panel);
       panelContainer.appendChild(panel);
@@ -131,6 +207,7 @@ export class CellBorderBgDialog extends ModalDialog {
   }
 
   private switchTab(idx: number): void {
+    this.activeTabId = this.tabs[idx]?.dataset.tab ?? 'border';
     for (let i = 0; i < this.tabs.length; i++) {
       this.tabs[i].classList.toggle('active', i === idx);
       this.panels[i].classList.toggle('active', i === idx);
@@ -144,18 +221,18 @@ export class CellBorderBgDialog extends ModalDialog {
     frag.className = 'tcp-tab-content';
 
     // 선 종류 시각적 격자
-    const lineSection = this.createSection('선 종류(Y)');
+    const lineSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label'));
     this.borderLineTypeGrid = document.createElement('div');
     this.borderLineTypeGrid.className = 'tcp-line-type-grid';
     const lineTypeDefs = [
-      { type: 0, label: '없음' },
+      { type: 0, label: i18nText('dialog.cellBorderBg.buildBorderTab.label') },
       { type: 1, dash: '' },
       { type: 2, dash: '6,3' },
       { type: 3, dash: '2,2' },
       { type: 4, dash: '8,3,2,3' },
       { type: 5, dash: '8,3,2,3,2,3' },
       { type: 6, dash: '12,3' },
-      { type: 8, label: '이중' },
+      { type: 8, label: i18nText('dialog.cellBorderBg.buildBorderTab.label.x87ab78') },
     ];
     lineTypeDefs.forEach(def => {
       const item = document.createElement('div');
@@ -164,7 +241,7 @@ export class CellBorderBgDialog extends ModalDialog {
       if (def.type === 0) {
         const span = document.createElement('span');
         span.className = 'tcp-line-type-none';
-        span.textContent = '없음';
+        span.textContent = i18nText('dialog.cellBorderBg.span.text');
         item.appendChild(span);
       } else if (def.type === 8) {
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -173,7 +250,7 @@ export class CellBorderBgDialog extends ModalDialog {
           const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
           l.setAttribute('x1', '0'); l.setAttribute('y1', String(y));
           l.setAttribute('x2', '48'); l.setAttribute('y2', String(y));
-          l.setAttribute('stroke', '#333'); l.setAttribute('stroke-width', '1');
+          l.setAttribute('stroke', LINE_SAMPLE_STROKE); l.setAttribute('stroke-width', '1');
           svg.appendChild(l);
         }
         item.appendChild(svg);
@@ -183,7 +260,7 @@ export class CellBorderBgDialog extends ModalDialog {
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         line.setAttribute('x1', '0'); line.setAttribute('y1', '5');
         line.setAttribute('x2', '48'); line.setAttribute('y2', '5');
-        line.setAttribute('stroke', '#333'); line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('stroke', LINE_SAMPLE_STROKE); line.setAttribute('stroke-width', '1.5');
         if (def.dash) line.setAttribute('stroke-dasharray', def.dash);
         svg.appendChild(line);
         item.appendChild(svg);
@@ -200,9 +277,9 @@ export class CellBorderBgDialog extends ModalDialog {
     frag.appendChild(lineSection);
 
     // 굵기 + 색
-    const attrSection = this.createSection('선 속성');
+    const attrSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.x6ac29f'));
     const widthRow = this.row();
-    widthRow.appendChild(this.label('굵기'));
+    widthRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label')));
     this.borderWidthSelect = document.createElement('select');
     this.borderWidthSelect.className = 'dialog-select';
     ['0.1mm', '0.12mm', '0.15mm', '0.2mm', '0.25mm', '0.3mm', '0.4mm'].forEach((text, i) => {
@@ -214,7 +291,7 @@ export class CellBorderBgDialog extends ModalDialog {
     attrSection.appendChild(widthRow);
 
     const colorRow = this.row();
-    colorRow.appendChild(this.label('색'));
+    colorRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.xa002ac')));
     this.borderColorInput = document.createElement('input');
     this.borderColorInput.type = 'color';
     this.borderColorInput.value = '#000000';
@@ -225,16 +302,16 @@ export class CellBorderBgDialog extends ModalDialog {
     frag.appendChild(attrSection);
 
     // 프리셋 버튼 + 미리보기
-    const previewSection = this.createSection('미리 보기');
+    const previewSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.x8eb63e'));
 
     // 프리셋: 모두/바깥쪽/안쪽
     const presetRow = this.row();
     const presetGroup = document.createElement('div');
     presetGroup.className = 'dialog-btn-group';
     const presets = [
-      { label: '모두', dirs: [0, 1, 2, 3] },
-      { label: '바깥쪽', dirs: [0, 1, 2, 3] },
-      { label: '안쪽', dirs: [] as number[] },
+      { label: i18nText('dialog.cellBorderBg.buildBorderTab.label.xf7473b'), dirs: [0, 1, 2, 3] },
+      { label: i18nText('dialog.cellBorderBg.buildBorderTab.label.x634f07'), dirs: [0, 1, 2, 3] },
+      { label: i18nText('dialog.cellBorderBg.buildBorderTab.label.x8eb06a'), dirs: [] as number[] },
     ];
     presets.forEach(p => {
       const btn = document.createElement('button');
@@ -276,7 +353,7 @@ export class CellBorderBgDialog extends ModalDialog {
 
     // 선 모양 바로 적용
     const immediateRow = this.row();
-    this.borderApplyImmediateCheck = this.checkbox('선 모양 바로 적용(I)');
+    this.borderApplyImmediateCheck = this.checkbox(i18nText('dialog.cellBorderBg.checkbox.label'));
     immediateRow.appendChild(this.borderApplyImmediateCheck.parentElement!);
     previewSection.appendChild(immediateRow);
 
@@ -310,7 +387,7 @@ export class CellBorderBgDialog extends ModalDialog {
     const bg = document.createElementNS(ns, 'rect');
     bg.setAttribute('x', '0'); bg.setAttribute('y', '0');
     bg.setAttribute('width', '120'); bg.setAttribute('height', '100');
-    bg.setAttribute('fill', '#fff');
+    bg.style.setProperty('fill', DOC_PAPER_COLOR);
     svg.appendChild(bg);
 
     // 십자선
@@ -318,7 +395,7 @@ export class CellBorderBgDialog extends ModalDialog {
       const line = document.createElementNS(ns, 'line');
       line.setAttribute('x1', x1); line.setAttribute('y1', y1);
       line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-      line.setAttribute('stroke', '#ccc'); line.setAttribute('stroke-width', '0.5');
+      line.style.setProperty('stroke', PREVIEW_GUIDE_STROKE); line.setAttribute('stroke-width', '0.5');
       line.setAttribute('stroke-dasharray', '3,2');
       svg.appendChild(line);
     }
@@ -363,7 +440,7 @@ export class CellBorderBgDialog extends ModalDialog {
     const frag = document.createElement('div');
     frag.className = 'tcp-tab-content';
 
-    const fillSection = this.createSection('채우기');
+    const fillSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.x2ce970'));
 
     const noneRow = this.row();
     this.bgNoneRadio = document.createElement('input');
@@ -372,7 +449,7 @@ export class CellBorderBgDialog extends ModalDialog {
     this.bgNoneRadio.checked = true;
     this.bgNoneRadio.addEventListener('change', () => this.updateBgPreview());
     noneRow.appendChild(this.bgNoneRadio);
-    noneRow.appendChild(document.createTextNode(' 채우기 없음'));
+    noneRow.appendChild(document.createTextNode(i18nText('dialog.cellBorderBg.buildBackgroundTab.text')));
     fillSection.appendChild(noneRow);
 
     const colorRow = this.row();
@@ -381,7 +458,7 @@ export class CellBorderBgDialog extends ModalDialog {
     this.bgColorRadio.name = 'cellBgFill';
     this.bgColorRadio.addEventListener('change', () => this.updateBgPreview());
     colorRow.appendChild(this.bgColorRadio);
-    colorRow.appendChild(document.createTextNode(' 색(Q)'));
+    colorRow.appendChild(document.createTextNode(i18nText('dialog.cellBorderBg.buildBackgroundTab.text.xfec1dd')));
     fillSection.appendChild(colorRow);
 
     // 면색 + 무늬색 + 무늬모양
@@ -389,7 +466,7 @@ export class CellBorderBgDialog extends ModalDialog {
     colorFields.style.marginLeft = '20px';
 
     const faceRow = this.row();
-    faceRow.appendChild(this.label('면색(C)'));
+    faceRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.x596a8a')));
     this.bgColorPicker = document.createElement('input');
     this.bgColorPicker.type = 'color';
     this.bgColorPicker.value = '#ffffff';
@@ -403,7 +480,7 @@ export class CellBorderBgDialog extends ModalDialog {
     colorFields.appendChild(faceRow);
 
     const patColorRow = this.row();
-    patColorRow.appendChild(this.label('무늬색(K)'));
+    patColorRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.x8c4c9a')));
     this.bgPatternColorPicker = document.createElement('input');
     this.bgPatternColorPicker.type = 'color';
     this.bgPatternColorPicker.value = '#000000';
@@ -417,10 +494,10 @@ export class CellBorderBgDialog extends ModalDialog {
     colorFields.appendChild(patColorRow);
 
     const patTypeRow = this.row();
-    patTypeRow.appendChild(this.label('무늬모양(L)'));
+    patTypeRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.x0829e0')));
     this.bgPatternTypeSelect = this.selectOptions([
-      ['0', '없음'], ['1', '가로줄'], ['2', '세로줄'], ['3', '역슬래시'],
-      ['4', '슬래시'], ['5', '십자'], ['6', 'X자'],
+      ['0', i18nText('dialog.cellBorderBg.selectOptions.label')], ['1', i18nText('dialog.cellBorderBg.selectOptions.label.xd965c1')], ['2', i18nText('dialog.cellBorderBg.selectOptions.label.x7842b4')], ['3', i18nText('dialog.cellBorderBg.selectOptions.label.xf14cb1')],
+      ['4', i18nText('dialog.cellBorderBg.selectOptions.label.xcf200e')], ['5', i18nText('dialog.cellBorderBg.buildBackgroundTab.label')], ['6', i18nText('dialog.cellBorderBg.buildBackgroundTab.label.x432dc9')],
     ]);
     this.bgPatternTypeSelect.addEventListener('change', () => {
       this.bgColorRadio.checked = true;
@@ -446,7 +523,7 @@ export class CellBorderBgDialog extends ModalDialog {
 
   private updateBgPreview(): void {
     if (!this.bgColorRadio.checked) {
-      this.bgPreviewBox.style.background = '#ffffff';
+      this.bgPreviewBox.style.background = DOC_PAPER_COLOR;
       return;
     }
     const faceColor = this.bgColorPicker.value;
@@ -472,97 +549,369 @@ export class CellBorderBgDialog extends ModalDialog {
   private buildDiagonalTab(): HTMLElement {
     const frag = document.createElement('div');
     frag.className = 'tcp-tab-content';
+    const layout = document.createElement('div');
+    layout.className = 'tcp-diag-layout';
+    const controls = document.createElement('div');
+    controls.className = 'tcp-diag-controls';
 
     // 선 속성
-    const lineSection = this.createSection('선 속성');
+    const lineSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.x6ac29f'));
     const typeRow = this.row();
-    typeRow.appendChild(this.label('종류'));
-    this.diagLineTypeSelect = this.selectOptions([
-      ['0', '없음'], ['1', '실선'], ['2', '파선'], ['3', '점선'],
-      ['4', '일점쇄선'], ['5', '이점쇄선'], ['6', '긴 파선'], ['7', '이중 실선'],
-    ]);
+    typeRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.x2ec5ae')));
+    this.diagLineTypeSelect = this.selectOptions(DIAGONAL_LINE_TYPE_OPTIONS);
+    this.diagLineTypeSelect.addEventListener('change', () => this.updateDiagonalPreview());
     typeRow.appendChild(this.diagLineTypeSelect);
     lineSection.appendChild(typeRow);
 
     const widthRow = this.row();
-    widthRow.appendChild(this.label('굵기'));
-    this.diagWidthSelect = this.selectOptions([
-      ['0', '0.1mm'], ['1', '0.12mm'], ['2', '0.15mm'], ['3', '0.2mm'],
-      ['4', '0.25mm'], ['5', '0.3mm'], ['6', '0.4mm'],
-    ]);
+    widthRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label')));
+    this.diagWidthSelect = this.selectOptions(DIAGONAL_WIDTH_OPTIONS);
+    this.diagWidthSelect.addEventListener('change', () => this.updateDiagonalPreview());
     widthRow.appendChild(this.diagWidthSelect);
     lineSection.appendChild(widthRow);
 
     const colorRow = this.row();
-    colorRow.appendChild(this.label('색'));
+    colorRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.xa002ac')));
     this.diagColorInput = document.createElement('input');
     this.diagColorInput.type = 'color';
     this.diagColorInput.value = '#000000';
     this.diagColorInput.style.width = '40px';
     this.diagColorInput.style.height = '22px';
+    this.diagColorInput.addEventListener('input', () => this.updateDiagonalPreview());
     colorRow.appendChild(this.diagColorInput);
     lineSection.appendChild(colorRow);
-    frag.appendChild(lineSection);
+    controls.appendChild(lineSection);
 
     // 대각선 방향 아이콘
-    const dirSection = this.createSection('대각선 방향');
+    const dirSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.xb76080'));
 
-    // \ 대각선
     const bsRow = this.row();
-    bsRow.appendChild(this.label('\\ 대각선'));
-    const bsGroup = document.createElement('div');
-    bsGroup.className = 'dialog-btn-group';
-    const bsBtn = document.createElement('button');
-    bsBtn.type = 'button';
-    bsBtn.textContent = '\\';
-    bsBtn.addEventListener('click', () => bsBtn.classList.toggle('active'));
-    bsGroup.appendChild(bsBtn);
-    bsRow.appendChild(bsGroup);
+    bsRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.xa2ebd4')));
+    bsRow.appendChild(this.createDiagonalButtonGroup('backSlash', [
+      ['CENTER', 0b010, '단순 역대각선'],
+      ['CENTER_BELOW', 0b011, '아래쪽 분기 역대각선'],
+      ['ALL', 0b111, '전체 분기 역대각선'],
+    ]));
     dirSection.appendChild(bsRow);
 
-    // / 대각선
     const fsRow = this.row();
-    fsRow.appendChild(this.label('/ 대각선'));
-    const fsGroup = document.createElement('div');
-    fsGroup.className = 'dialog-btn-group';
-    const fsBtn = document.createElement('button');
-    fsBtn.type = 'button';
-    fsBtn.textContent = '/';
-    fsBtn.addEventListener('click', () => fsBtn.classList.toggle('active'));
-    fsGroup.appendChild(fsBtn);
-    fsRow.appendChild(fsGroup);
+    fsRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.xde6e59')));
+    fsRow.appendChild(this.createDiagonalButtonGroup('slash', [
+      ['CENTER', 0b010, '단순 대각선'],
+      ['CENTER_BELOW', 0b011, '아래쪽 분기 대각선'],
+      ['ALL', 0b111, '전체 분기 대각선'],
+    ]));
     dirSection.appendChild(fsRow);
 
-    // + 중심선
     const csRow = this.row();
-    csRow.appendChild(this.label('+ 중심선'));
-    const csGroup = document.createElement('div');
-    csGroup.className = 'dialog-btn-group';
-    const csBtn = document.createElement('button');
-    csBtn.type = 'button';
-    csBtn.textContent = '+';
-    csBtn.addEventListener('click', () => csBtn.classList.toggle('active'));
-    csGroup.appendChild(csBtn);
-    csRow.appendChild(csGroup);
+    csRow.appendChild(this.label(i18nText('dialog.cellBorderBg.label.label.xdadce3')));
+    csRow.appendChild(this.createCenterLineButtonGroup());
     dirSection.appendChild(csRow);
 
-    frag.appendChild(dirSection);
+    controls.appendChild(dirSection);
 
     // 적용 범위
-    frag.appendChild(this.buildScopeSection('diag'));
+    controls.appendChild(this.buildScopeSection('diag'));
+
+    const previewSection = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.x8eb63e'));
+    this.diagPreviewSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.diagPreviewSvg.classList.add('tcp-diag-preview-svg');
+    this.diagPreviewSvg.setAttribute('viewBox', '0 0 160 120');
+    previewSection.appendChild(this.diagPreviewSvg);
+
+    layout.appendChild(controls);
+    layout.appendChild(previewSection);
+    frag.appendChild(layout);
 
     return frag;
+  }
+
+  private createDiagonalButtonGroup(
+    kind: 'slash' | 'backSlash',
+    defs: [string, number, string][],
+  ): HTMLDivElement {
+    const group = document.createElement('div');
+    group.className = 'tcp-diag-button-grid';
+    const clearTitle = kind === 'slash' ? '대각선 해제' : '역대각선 해제';
+    const clearBtn = this.createIconButton(clearTitle, this.createEmptyDiagonalIcon());
+    clearBtn.addEventListener('click', () => {
+      if (kind === 'slash') {
+        this.diagSlashBits = 0;
+      } else {
+        this.diagBackSlashBits = 0;
+      }
+      this.updateDiagonalButtons();
+      this.updateDiagonalPreview();
+    });
+    clearBtn.dataset.kind = kind;
+    clearBtn.dataset.bits = '0';
+    group.appendChild(clearBtn);
+    this.diagButtons.push(clearBtn);
+
+    for (const [shape, bits, title] of defs) {
+      const btn = this.createIconButton(title, this.createDiagonalIcon(kind, shape));
+      btn.addEventListener('click', () => {
+        if (kind === 'slash') {
+          this.diagSlashBits = this.diagSlashBits === bits ? 0 : bits;
+        } else {
+          this.diagBackSlashBits = this.diagBackSlashBits === bits ? 0 : bits;
+        }
+        if (this.hasDiagonalSelection()) this.diagCenterLine = 'NONE';
+        this.updateDiagonalButtons();
+        this.updateDiagonalPreview();
+      });
+      btn.dataset.kind = kind;
+      btn.dataset.bits = String(bits);
+      group.appendChild(btn);
+      this.diagButtons.push(btn);
+    }
+    return group;
+  }
+
+  private createCenterLineButtonGroup(): HTMLDivElement {
+    const group = document.createElement('div');
+    group.className = 'tcp-diag-button-grid';
+    const clearBtn = this.createIconButton(i18nText('dialog.cellBorderBg.createIconButton.label'), this.createEmptyDiagonalIcon());
+    clearBtn.addEventListener('click', () => {
+      this.diagCenterLine = 'NONE';
+      this.updateDiagonalButtons();
+      this.updateDiagonalPreview();
+    });
+    clearBtn.dataset.kind = 'centerLine';
+    clearBtn.dataset.value = 'NONE';
+    group.appendChild(clearBtn);
+    this.diagButtons.push(clearBtn);
+
+    const defs: [string, string][] = [
+      ['VERTICAL', i18nText('dialog.cellBorderBg.createCenterLineButtonGroup.label')],
+      ['HORIZONTAL', i18nText('dialog.cellBorderBg.createCenterLineButtonGroup.label.xa8f8ec')],
+      ['CROSS', i18nText('dialog.cellBorderBg.createCenterLineButtonGroup.label.x90a4f5')],
+    ];
+    for (const [value, title] of defs) {
+      const btn = this.createIconButton(title, this.createCenterLineIcon(value));
+      btn.addEventListener('click', () => {
+        this.diagCenterLine = this.diagCenterLine === value ? 'NONE' : value;
+        if (this.hasCenterLineSelection()) {
+          this.diagSlashBits = 0;
+          this.diagBackSlashBits = 0;
+        }
+        this.updateDiagonalButtons();
+        this.updateDiagonalPreview();
+      });
+      btn.dataset.kind = 'centerLine';
+      btn.dataset.value = value;
+      group.appendChild(btn);
+      this.diagButtons.push(btn);
+    }
+    return group;
+  }
+
+  private createIconButton(title: string, svg: SVGSVGElement): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tcp-diag-btn';
+    btn.title = title;
+    btn.appendChild(svg);
+    return btn;
+  }
+
+  private createEmptyDiagonalIcon(): SVGSVGElement {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 36 28');
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', '3'); rect.setAttribute('y', '3');
+    rect.setAttribute('width', '30'); rect.setAttribute('height', '22');
+    rect.setAttribute('fill', 'none');
+    rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '1');
+    svg.appendChild(rect);
+    return svg;
+  }
+
+  private createDiagonalIcon(kind: 'slash' | 'backSlash', shape: string): SVGSVGElement {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 36 28');
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', '3'); rect.setAttribute('y', '3');
+    rect.setAttribute('width', '30'); rect.setAttribute('height', '22');
+    rect.setAttribute('fill', 'none'); rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '1');
+    svg.appendChild(rect);
+    const segments = this.diagonalSegments(kind, shape, 3, 3, 30, 22);
+    for (const [x1, y1, x2, y2] of segments) {
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(x1)); line.setAttribute('y1', String(y1));
+      line.setAttribute('x2', String(x2)); line.setAttribute('y2', String(y2));
+      line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '1.6');
+      svg.appendChild(line);
+    }
+    return svg;
+  }
+
+  private createCenterLineIcon(value: string): SVGSVGElement {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 36 28');
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', '3'); rect.setAttribute('y', '3');
+    rect.setAttribute('width', '30'); rect.setAttribute('height', '22');
+    rect.setAttribute('fill', 'none'); rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '1');
+    svg.appendChild(rect);
+    const lines: [number, number, number, number][] = [];
+    if (value === 'VERTICAL' || value === 'CROSS') lines.push([3, 14, 33, 14]);
+    if (value === 'HORIZONTAL' || value === 'CROSS') lines.push([18, 3, 18, 25]);
+    for (const [x1, y1, x2, y2] of lines) {
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(x1)); line.setAttribute('y1', String(y1));
+      line.setAttribute('x2', String(x2)); line.setAttribute('y2', String(y2));
+      line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '1.6');
+      svg.appendChild(line);
+    }
+    return svg;
+  }
+
+  private diagonalSegments(
+    kind: 'slash' | 'backSlash',
+    shape: string,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): [number, number, number, number][] {
+    const x1 = x;
+    const y1 = y;
+    const x2 = x + w;
+    const y2 = y + h;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    if (kind === 'slash') {
+      if (shape === 'CENTER_BELOW') return [[x1, y1, x2, cy], [x1, y1, cx, y2]];
+      if (shape === 'ALL') return [[x1, y2, x2, y1], [x1, y2, x2, cy], [x1, y2, cx, y1]];
+      return [[x1, y2, x2, y1]];
+    }
+    if (shape === 'CENTER_BELOW') return [[x2, y1, x1, cy], [x2, y1, cx, y2]];
+    if (shape === 'ALL') return [[x1, y1, x2, y2], [x1, y1, cx, y2], [x1, y1, x2, cy]];
+    return [[x1, y1, x2, y2]];
+  }
+
+  private hasDiagonalSelection(): boolean {
+    return this.diagSlashBits !== 0 || this.diagBackSlashBits !== 0;
+  }
+
+  private hasCenterLineSelection(): boolean {
+    return this.diagCenterLine !== 'NONE';
+  }
+
+  private normalizeDiagonalExclusive(): void {
+    if (this.applyMode === 'asOne') {
+      this.diagCenterLine = 'NONE';
+    } else if (this.hasCenterLineSelection()) {
+      this.diagSlashBits = 0;
+      this.diagBackSlashBits = 0;
+    } else if (this.hasDiagonalSelection()) {
+      this.diagCenterLine = 'NONE';
+    }
+  }
+
+  private updateDiagonalButtons(): void {
+    const centerLineUnavailable = this.applyMode === 'asOne';
+    const centerLineSelected = this.hasCenterLineSelection();
+    const diagonalSelected = this.hasDiagonalSelection();
+    for (const btn of this.diagButtons) {
+      const kind = btn.dataset.kind;
+      if (kind === 'slash') {
+        const active = Number(btn.dataset.bits) === this.diagSlashBits;
+        btn.classList.toggle('active', active);
+        btn.disabled = centerLineSelected;
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      } else if (kind === 'backSlash') {
+        const active = Number(btn.dataset.bits) === this.diagBackSlashBits;
+        btn.classList.toggle('active', active);
+        btn.disabled = centerLineSelected;
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      } else if (kind === 'centerLine') {
+        const active = !centerLineUnavailable && btn.dataset.value === this.diagCenterLine;
+        btn.classList.toggle('active', active);
+        btn.disabled = centerLineUnavailable || diagonalSelected;
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+  }
+
+  private updateDiagonalPreview(): void {
+    const svg = this.diagPreviewSvg;
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const ns = 'http://www.w3.org/2000/svg';
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', '20'); rect.setAttribute('y', '16');
+    rect.setAttribute('width', '120'); rect.setAttribute('height', '88');
+    rect.style.setProperty('fill', DOC_PAPER_COLOR);
+    rect.setAttribute('stroke', 'var(--color-border)');
+    svg.appendChild(rect);
+
+    const lineType = parseInt(this.diagLineTypeSelect?.value ?? '0', 10);
+    if (lineType === 0) return;
+    const color = this.diagColorInput?.value ?? '#000000';
+    const widthIndex = parseInt(this.diagWidthSelect?.value ?? '0', 10);
+    const width = diagonalPreviewWidthPx(widthIndex);
+    const dashMap: Record<number, string> = {
+      2: '7,4', 3: '2,3', 4: '8,3,2,3', 5: '8,3,2,3,2,3', 6: '12,4',
+    };
+    const draw = (x1: number, y1: number, x2: number, y2: number, strokeWidth = width, offset = 0) => {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const ox = (-dy / len) * offset;
+      const oy = (dx / len) * offset;
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(x1 + ox)); line.setAttribute('y1', String(y1 + oy));
+      line.setAttribute('x2', String(x2 + ox)); line.setAttribute('y2', String(y2 + oy));
+      line.setAttribute('stroke', color); line.setAttribute('stroke-width', String(strokeWidth));
+      if (dashMap[lineType]) line.setAttribute('stroke-dasharray', dashMap[lineType]);
+      svg.appendChild(line);
+    };
+
+    const drawStyled = (x1: number, y1: number, x2: number, y2: number) => {
+      const thin = Math.max(0.8, width * 0.28);
+      const thick = Math.max(1.4, width * 0.72);
+      const gap = Math.max(2.2, width * 0.5);
+      if (lineType === 8) {
+        draw(x1, y1, x2, y2, thin, -gap / 2);
+        draw(x1, y1, x2, y2, thin, gap / 2);
+      } else if (lineType === 9) {
+        draw(x1, y1, x2, y2, thin, -gap / 2);
+        draw(x1, y1, x2, y2, thick, gap / 2);
+      } else if (lineType === 10) {
+        draw(x1, y1, x2, y2, thick, -gap / 2);
+        draw(x1, y1, x2, y2, thin, gap / 2);
+      } else if (lineType === 11) {
+        draw(x1, y1, x2, y2, thin, -gap);
+        draw(x1, y1, x2, y2, thick, 0);
+        draw(x1, y1, x2, y2, thin, gap);
+      } else {
+        draw(x1, y1, x2, y2);
+      }
+    };
+
+    if (this.diagSlashBits !== 0) drawStyled(20, 104, 140, 16);
+    if (this.diagBackSlashBits !== 0) drawStyled(20, 16, 140, 104);
+    if (this.diagCenterLine === 'VERTICAL' || this.diagCenterLine === 'CROSS') drawStyled(20, 60, 140, 60);
+    if (this.diagCenterLine === 'HORIZONTAL' || this.diagCenterLine === 'CROSS') drawStyled(80, 16, 80, 104);
   }
 
   // ─── 공통: 적용 범위 섹션 ────────────────────
 
   private buildScopeSection(prefix: string): HTMLDivElement {
-    const section = this.createSection('적용 범위');
+    const section = this.createSection(i18nText('dialog.cellBorderBg.createSection.label.xb1824b'));
     const radioGroup = document.createElement('div');
     radioGroup.className = 'dialog-radio-group';
     const radios: HTMLInputElement[] = [];
 
-    for (const [val, text] of [['selected', '선택된 셀(S)'], ['all', '모든 셀(E)']] as const) {
+    for (const [val, text] of [['selected', i18nText('dialog.cellBorderBg.buildScopeSection.label')], ['all', i18nText('dialog.cellBorderBg.buildScopeSection.label.x124fac')]] as const) {
       const lbl = document.createElement('label');
       const inp = document.createElement('input');
       inp.type = 'radio';
@@ -608,12 +957,42 @@ export class CellBorderBgDialog extends ModalDialog {
       this.bgNoneRadio.checked = true;
     }
     this.updateBgPreview();
+
+    this.diagLineTypeSelect.value = String(cp.diagonalLine ?? 0);
+    this.diagWidthSelect.value = String(cp.diagonalWidth ?? 0);
+    this.diagColorInput.value = cp.diagonalColor ?? '#000000';
+    this.diagSlashBits = cp.diagonalSlash ?? 0;
+    this.diagBackSlashBits = cp.diagonalBackSlash ?? 0;
+    this.diagCenterLine = cp.centerLine ?? 'NONE';
+    this.normalizeDiagonalExclusive();
+    this.updateDiagonalButtons();
+    this.updateDiagonalPreview();
+  }
+
+  private selectedCellIndicesForRange(range: CellRange): number[] {
+    const { sec, ppi, ci } = this.tableCtx;
+    const indices = new Set<number>();
+    const overlaps = (bbox: CellBbox): boolean => {
+      const endRow = bbox.row + Math.max(1, bbox.rowSpan) - 1;
+      const endCol = bbox.col + Math.max(1, bbox.colSpan) - 1;
+      return bbox.row <= range.endRow &&
+        endRow >= range.startRow &&
+        bbox.col <= range.endCol &&
+        endCol >= range.startCol;
+    };
+
+    for (const bbox of this.wasm.getTableCellBboxes(sec, ppi, ci)) {
+      if (overlaps(bbox)) indices.add(bbox.cellIdx);
+    }
+    return [...indices];
   }
 
   protected onConfirm(): void {
     const { sec, ppi, ci } = this.tableCtx;
+    this.normalizeDiagonalExclusive();
 
     const newProps: Record<string, unknown> = {};
+    newProps.borderFillId = this.cellProps.borderFillId ?? 0;
 
     // 테두리
     newProps.borderLeft = this.borderEdits[0];
@@ -631,17 +1010,84 @@ export class CellBorderBgDialog extends ModalDialog {
       newProps.fillType = 'none';
     }
 
-    // 적용 범위 결정: 테두리 탭의 scope를 기준으로 판단
-    const borderScope = this.borderScopeRadios?.find(r => r.checked)?.value ?? 'selected';
-    if (borderScope === 'all') {
-      const dims = this.wasm.getTableDimensions(sec, ppi, ci);
-      for (let i = 0; i < dims.cellCount; i++) {
-        this.wasm.setCellProperties(sec, ppi, ci, i, newProps as Partial<CellProperties>);
+    // 대각선/중심선
+    newProps.diagonalLine = parseInt(this.diagLineTypeSelect.value, 10);
+    newProps.diagonalSlash = this.diagSlashBits;
+    newProps.diagonalBackSlash = this.diagBackSlashBits;
+    newProps.diagonalWidth = parseInt(this.diagWidthSelect.value, 10);
+    newProps.diagonalColor = this.diagColorInput.value;
+    newProps.centerLine = this.diagCenterLine;
+
+    // 적용 범위 결정: 마지막으로 선택한 탭의 scope를 따른다.
+    const scopeRadios = this.activeTabId === 'background'
+      ? this.bgScopeRadios
+      : this.activeTabId === 'diagonal'
+        ? this.diagScopeRadios
+        : this.borderScopeRadios;
+    const scope = scopeRadios?.find(r => r.checked)?.value ?? 'selected';
+    // [#5959] 적용 대상을 데이터로 고정한다 — 커맨드 execute 가 다시 읽지 않는다.
+    const buildTargets = (): CellBorderFillTarget => {
+      if (this.applyMode === 'asOne') {
+        if (scope === 'all') {
+          const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+          return {
+            kind: 'zone',
+            range: {
+              startRow: 0,
+              startCol: 0,
+              endRow: Math.max(0, dims.rowCount - 1),
+              endCol: Math.max(0, dims.colCount - 1),
+            },
+          };
+        }
+        if (this.selectionRange) return { kind: 'zone', range: this.selectionRange };
+        return { kind: 'cells', cellIdxes: [this.cellIdx] };
       }
+      if (scope === 'all') {
+        const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+        const all = Array.from({ length: dims.cellCount }, (_, i) => i);
+        return { kind: 'cells', cellIdxes: all };
+      }
+      if (this.selectionRange) {
+        const cellIndices = this.selectedCellIndicesForRange(this.selectionRange);
+        return { kind: 'cells', cellIdxes: cellIndices.length > 0 ? cellIndices : [this.cellIdx] };
+      }
+      return { kind: 'cells', cellIdxes: [this.cellIdx] };
+    };
+    // 셀 테두리/배경 일괄 적용도 undo 대상이다 — 속성쌍 역연산 커맨드로 기록해
+    // 스냅샷 슬롯을 쓰지 않는다(#5959). services 미주입 환경(구 호출부)에서만
+    // 직접 적용 fallback(기록 없음 — 종전 계약 유지).
+    // services 미주입 환경의 직접 적용 — 기록 없음(종전 계약 유지).
+    const applyDirect = () => {
+      const t = buildTargets();
+      if (t.kind === 'zone') {
+        this.wasm.setCellZoneProperties(sec, ppi, ci, t.range, newProps as Partial<CellProperties>);
+        return;
+      }
+      // 셀 수만큼 setCellProperties 를 호출하므로 재페이지네이션을 묶는다(#4118).
+      this.wasm.runInBatch(() => {
+        for (const cellIdx of t.cellIdxes) {
+          this.wasm.setCellProperties(sec, ppi, ci, cellIdx, newProps as Partial<CellProperties>);
+        }
+      });
+    };
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      applyCommandThroughRouter({
+        services: this.services,
+        label: 'CellBorderBgDialog',
+        command: () => ({
+          kind: 'command',
+          command: new SetCellBorderFillCommand(
+            sec, ppi, ci, buildTargets(), newProps, ih.getCursorPosition(),
+          ),
+        }),
+        fallback: applyDirect,
+      });
     } else {
-      this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+      applyDirect();
+      this.eventBus.emit('document-changed');
     }
-    this.eventBus.emit('document-changed');
   }
 
   // ─── DOM 헬퍼 ────────────────────────────────

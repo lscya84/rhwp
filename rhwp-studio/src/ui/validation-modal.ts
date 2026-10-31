@@ -1,6 +1,10 @@
 /**
  * HWPX 비표준 lineseg 감지 알림 모달 (#177).
  *
+ * ⚠️ #2527: 현재 main.ts에서 호출하지 않는다(미사용). 자동 보정(reflowLinesegs)이
+ * 빈-lineseg 문서에서 글자 겹침을 유발해, 문서는 항상 '그대로 보기'로 연다.
+ * reflow 근본 수정 후 이 모달 재도입을 검토하기 위해 컴포넌트는 보존한다.
+ *
  * 문서 로드 완료 직후 `wasm.getValidationWarnings()` 결과를 받아,
  * 경고가 있으면 사용자에게 모달로 알리고 선택지를 제공한다.
  *
@@ -18,7 +22,9 @@
  */
 
 import type { ValidationReport } from '../core/wasm-bridge';
+import { enableDialogDrag } from './dialog-drag';
 
+import { t } from '../i18n/index.ts';
 /** 모달이 반환하는 사용자 선택. */
 export type ValidationChoice = 'auto-fix' | 'as-is' | 'cancel';
 
@@ -59,13 +65,14 @@ export class ValidationModal {
     // 타이틀
     const title = document.createElement('div');
     title.className = 'dialog-title';
-    title.textContent = 'HWPX 비표준 감지';
+    title.textContent = t('dialog.validationModal.title.text');
     const closeBtn = document.createElement('button');
     closeBtn.className = 'dialog-close';
     closeBtn.textContent = '\u00D7';
     closeBtn.addEventListener('click', () => this.resolve('cancel'));
     title.appendChild(closeBtn);
     dialog.appendChild(title);
+    enableDialogDrag(dialog, title);
 
     // 본문
     const body = document.createElement('div');
@@ -75,7 +82,7 @@ export class ValidationModal {
 
     const desc = document.createElement('p');
     desc.style.margin = '0 0 12px 0';
-    desc.textContent = `이 문서는 HWPX 명세를 일부 준수하지 않는 값을 포함합니다 (경고 ${this.report.count}건). 렌더링 품질을 위해 자동 보정을 권장합니다.`;
+    desc.textContent = t('dialog.validationModal.desc.text', { p1: this.report.count });
     body.appendChild(desc);
 
     // 경고 요약
@@ -83,10 +90,10 @@ export class ValidationModal {
     summary.style.margin = '0 0 12px 16px';
     summary.style.padding = '0';
     summary.style.fontSize = '13px';
-    summary.style.color = '#555';
+    summary.style.color = 'var(--color-text-secondary)';
     for (const [kind, cnt] of Object.entries(this.report.summary)) {
       const li = document.createElement('li');
-      li.textContent = `${kind}: ${cnt}건`;
+      li.textContent = t('dialog.validationModal.li.text', { p1: kind, p2: cnt });
       summary.appendChild(li);
     }
     body.appendChild(summary);
@@ -95,10 +102,10 @@ export class ValidationModal {
     const details = document.createElement('details');
     details.style.marginTop = '8px';
     const summaryEl = document.createElement('summary');
-    summaryEl.textContent = '상세 보기';
+    summaryEl.textContent = t('dialog.validationModal.summaryEl.text');
     summaryEl.style.cursor = 'pointer';
     summaryEl.style.fontSize = '13px';
-    summaryEl.style.color = '#0066cc';
+    summaryEl.style.color = 'var(--ui-link)';
     details.appendChild(summaryEl);
 
     const detailList = document.createElement('div');
@@ -106,26 +113,27 @@ export class ValidationModal {
     detailList.style.overflow = 'auto';
     detailList.style.marginTop = '8px';
     detailList.style.padding = '8px';
-    detailList.style.background = '#f6f6f6';
+    detailList.style.background = 'var(--color-surface-raised)';
     detailList.style.borderRadius = '4px';
     detailList.style.fontFamily = 'monospace';
     detailList.style.fontSize = '12px';
+    detailList.style.color = 'var(--color-text)';
 
     const maxShow = 50;
     const shown = this.report.warnings.slice(0, maxShow);
     for (const w of shown) {
       const line = document.createElement('div');
       const cellStr = w.cell
-        ? ` [셀 ctrl=${w.cell.ctrl} row=${w.cell.row} col=${w.cell.col} para=${w.cell.innerPara}]`
+        ? t('dialog.validationModal.build.text', { p1: w.cell.ctrl, p2: w.cell.row, p3: w.cell.col, p4: w.cell.innerPara })
         : '';
       line.textContent = `section=${w.section} para=${w.paragraph} ${w.kind}${cellStr}`;
       detailList.appendChild(line);
     }
     if (this.report.warnings.length > maxShow) {
       const more = document.createElement('div');
-      more.style.color = '#888';
+      more.style.color = 'var(--color-text-hint)';
       more.style.marginTop = '4px';
-      more.textContent = `... 외 ${this.report.warnings.length - maxShow}건`;
+      more.textContent = t('dialog.validationModal.more.text', { p1: this.report.warnings.length - maxShow });
       detailList.appendChild(more);
     }
     details.appendChild(detailList);
@@ -139,12 +147,12 @@ export class ValidationModal {
 
     const autoFixBtn = document.createElement('button');
     autoFixBtn.className = 'dialog-btn dialog-btn-primary';
-    autoFixBtn.textContent = '자동 보정 (권장)';
+    autoFixBtn.textContent = t('dialog.validationModal.autoFixBtn.text');
     autoFixBtn.addEventListener('click', () => this.resolve('auto-fix'));
 
     const asIsBtn = document.createElement('button');
     asIsBtn.className = 'dialog-btn';
-    asIsBtn.textContent = '그대로 보기';
+    asIsBtn.textContent = t('dialog.validationModal.asIsBtn.text');
     asIsBtn.addEventListener('click', () => this.resolve('as-is'));
 
     footer.appendChild(autoFixBtn);
@@ -152,11 +160,6 @@ export class ValidationModal {
     dialog.appendChild(footer);
 
     this.overlay.appendChild(dialog);
-
-    // 오버레이 배경 클릭은 취소로 처리 (명시적 선택 유도하려면 막을 수도 있음)
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.resolve('cancel');
-    });
   }
 
   private bindKeyboard(): void {

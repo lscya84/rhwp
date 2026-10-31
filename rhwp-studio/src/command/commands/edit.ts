@@ -1,15 +1,26 @@
 import type { CommandDef } from '../types';
 import { FieldEditDialog } from '@/ui/field-edit-dialog';
-import { FindDialog } from '@/ui/find-dialog';
+import { FindDialog, navigateToSearchHit } from '@/ui/find-dialog';
 import { GotoDialog } from '@/ui/goto-dialog';
+import { HistoryDialog } from '@/ui/history-dialog';
+import { CompareDialog } from '@/ui/compare-dialog';
+import { CompareSessionStore } from '@/compare/session';
+import { canExecuteFormatPaste } from '../format-paste-availability';
 
+import { t } from '../../i18n/index.ts';
 /** 검색 대화상자 싱글톤 — 열려 있으면 재사용 */
 let findDialogInstance: FindDialog | null = null;
+/** 싱글톤: 문서 이력 관리 대화상자 */
+let historyDialogInstance: HistoryDialog | null = null;
+/** 싱글톤: 두 파일 문서 비교 대화상자 */
+let compareDialogInstance: CompareDialog | null = null;
+/** 비교/이력 공용 세션 스토어 */
+let compareSessionStore: CompareSessionStore | null = null;
 
 export const editCommands: CommandDef[] = [
   {
     id: 'edit:undo',
-    label: '되돌리기',
+    label: t('command.edit.undo.label'),
     icon: 'icon-undo',
     shortcutLabel: 'Ctrl+Z',
     canExecute: (ctx) => ctx.hasDocument && ctx.canUndo,
@@ -19,7 +30,7 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:redo',
-    label: '다시 실행',
+    label: t('command.edit.redo.label'),
     icon: 'icon-redo',
     shortcutLabel: 'Ctrl+Shift+Z',
     canExecute: (ctx) => ctx.hasDocument && ctx.canRedo,
@@ -29,17 +40,17 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:cut',
-    label: '오려 두기',
+    label: t('command.edit.cut.label'),
     icon: 'icon-cut',
     shortcutLabel: 'Ctrl+X',
-    canExecute: (ctx) => ctx.hasDocument && (ctx.hasSelection || ctx.inPictureObjectSelection || ctx.inTableObjectSelection),
+    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode && (ctx.hasSelection || ctx.inPictureObjectSelection || ctx.inTableObjectSelection),
     execute(services) {
       services.getInputHandler()?.performCut();
     },
   },
   {
     id: 'edit:copy',
-    label: '복사하기',
+    label: t('command.edit.copy.label'),
     icon: 'icon-copy',
     shortcutLabel: 'Ctrl+C',
     canExecute: (ctx) => ctx.hasDocument && (ctx.hasSelection || ctx.inPictureObjectSelection || ctx.inTableObjectSelection),
@@ -49,33 +60,46 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:paste',
-    label: '붙이기',
+    label: t('command.edit.paste.label'),
     icon: 'icon-paste',
     shortcutLabel: 'Ctrl+V',
-    canExecute: (ctx) => ctx.hasDocument,
-    execute() {
-      document.execCommand('paste');
+    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode,
+    execute(services) {
+      services.getInputHandler()?.performPaste();
     },
   },
   {
     id: 'edit:format-copy',
-    label: '모양 복사',
+    label: t('command.edit.formatCopy.label'),
     icon: 'icon-format-copy',
-    shortcutLabel: 'Ctrl+Alt+C',
-    canExecute: () => false, // 미구현
-    execute() { /* TODO */ },
+    shortcutLabel: 'Alt+C',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      services.getInputHandler()?.performFormatCopy();
+    },
+  },
+  {
+    id: 'edit:format-paste',
+    label: t('command.edit.formatPaste.label'),
+    icon: 'icon-format-copy',
+    canExecute: canExecuteFormatPaste,
+    execute(services) {
+      services.getInputHandler()?.performFormatPaste();
+    },
   },
   {
     id: 'edit:delete',
-    label: '지우기',
+    label: t('command.edit.delete.label'),
     icon: 'icon-delete',
     shortcutLabel: 'Ctrl+E',
-    canExecute: () => false, // 미구현
-    execute() { /* TODO */ },
+    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode && (ctx.hasSelection || ctx.inPictureObjectSelection || ctx.inTableObjectSelection),
+    execute(services) {
+      services.getInputHandler()?.performDelete();
+    },
   },
   {
     id: 'edit:select-all',
-    label: '모두 선택',
+    label: t('command.edit.selectAll.label'),
     icon: 'icon-select-all',
     shortcutLabel: 'Ctrl+A',
     canExecute: (ctx) => ctx.hasDocument,
@@ -85,7 +109,8 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:find',
-    label: '찾기(F)',
+    opensDialog: true,
+    label: t('command.edit.find.label'),
     icon: 'icon-find',
     shortcutLabel: 'Ctrl+F',
     canExecute: (ctx) => ctx.hasDocument,
@@ -100,7 +125,8 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:find-replace',
-    label: '찾아 바꾸기(E)',
+    opensDialog: true,
+    label: t('command.edit.findReplace.label'),
     icon: 'icon-find-replace',
     shortcutLabel: 'Ctrl+F2',
     canExecute: (ctx) => ctx.hasDocument,
@@ -116,7 +142,7 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'edit:find-again',
-    label: '다시 찾기(X)',
+    label: t('command.edit.findAgain.label'),
     shortcutLabel: 'Ctrl+L',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
@@ -130,30 +156,53 @@ export const editCommands: CommandDef[] = [
         const result = services.wasm.searchText(
           FindDialog.lastQuery, pos.sectionIndex, pos.paragraphIndex,
           pos.charOffset, true, FindDialog.lastCaseSensitive,
+          // [#3865] 대화상자와 같은 범위를 본다 — 한쪽만 셀을 다루면 같은 문서에서
+          // Ctrl+F 는 표 안을 찾는데 F3 는 못 찾는 상태가 된다.
+          true,
         );
-        if (result.found) {
-          ih.moveCursorTo({
-            sectionIndex: result.sec!,
-            paragraphIndex: result.para!,
-            charOffset: result.charOffset!,
-          });
-          const cursor = (ih as any).cursor;
-          if (cursor) {
-            cursor.setAnchor();
-            cursor.moveTo({
-              sectionIndex: result.sec!,
-              paragraphIndex: result.para!,
-              charOffset: result.charOffset! + result.length!,
-            });
-          }
-          (ih as any).updateCaret?.();
-        }
+        // 이동 규칙도 대화상자와 공유한다(셀 매치는 셀 좌표로 간다).
+        navigateToSearchHit(ih, result);
       }
     },
   },
   {
+    id: 'edit:compare-documents',
+    opensDialog: true,
+    label: t('command.edit.compareDocuments.label'),
+    shortcutLabel: 'Alt+Shift+V',
+    canExecute: () => true,
+    execute(services) {
+      if (!compareSessionStore) {
+        compareSessionStore = new CompareSessionStore(services.eventBus);
+      }
+      if (historyDialogInstance?.isOpen()) historyDialogInstance.hide();
+      if (compareDialogInstance && compareDialogInstance.isOpen()) return;
+      compareDialogInstance = new CompareDialog(services, compareSessionStore);
+      compareDialogInstance.show();
+    },
+  },
+  {
+    id: 'edit:document-history',
+    opensDialog: true,
+    label: t('command.edit.documentHistory.label'),
+    shortcutLabel: 'Ctrl+Shift+H',
+    canExecute: () => true,
+    execute(services) {
+      if (!compareSessionStore) {
+        compareSessionStore = new CompareSessionStore(services.eventBus);
+      }
+      if (compareDialogInstance?.isOpen()) compareDialogInstance.hide();
+      if (historyDialogInstance && historyDialogInstance.isOpen()) {
+        return;
+      }
+      historyDialogInstance = new HistoryDialog(services, compareSessionStore);
+      historyDialogInstance.show();
+    },
+  },
+  {
     id: 'edit:goto',
-    label: '찾아가기(G)',
+    opensDialog: true,
+    label: t('command.edit.goto.label'),
     shortcutLabel: 'Alt+G',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
@@ -163,9 +212,10 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'field:edit',
-    label: '누름틀 고치기(E)...',
-    shortcutLabel: 'Ctrl+N,K',
-    canExecute: (ctx) => ctx.hasDocument && ctx.inField,
+    opensDialog: true,
+    label: t('command.field.edit.registryLabel'),
+    shortcutLabel: 'Ctrl+M,K',
+    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode && ctx.inField,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
@@ -177,16 +227,35 @@ export const editCommands: CommandDef[] = [
       if (!props.ok) return;
 
       const dialog = new FieldEditDialog();
+      const restoreEditorFocus = () => {
+        requestAnimationFrame(() => {
+          (ih as any).updateCaret?.();
+          ih.focus();
+        });
+      };
       dialog.onApply = (newProps) => {
         console.log('[field:edit] apply:', newProps);
-        const result = services.wasm.updateClickHereProps(
-          fi.fieldId, newProps.guide, newProps.memo, newProps.name, newProps.editable,
-        );
-        console.log('[field:edit] updateResult:', result);
-        if (result.ok) {
-          services.eventBus.emit('document-changed');
+        try {
+          // [Task #2377] 누름틀 속성 갱신은 안내문 텍스트를 바꿀 수 있다(문자 수 변경) —
+          // snapshot 으로 라우팅(일반 모드 전용 커맨드). 실패 시 throw 로 엔트리 생성을 막는다.
+          ih.executeOperation({
+            kind: 'snapshot',
+            operationType: 'updateFieldProps',
+            operation: (wasm) => {
+              const result = wasm.updateClickHereProps(
+                fi.fieldId, newProps.guide, newProps.memo, newProps.name, newProps.editable,
+              );
+              if (!result.ok) throw new Error('updateClickHereProps not ok');
+              return ih.getCursorPosition();
+            },
+          });
+          // [Task #2370] 수동 emit 제거 — 라우터의 'full' refresh(afterEdit)가 이미
+          // 'document-mutated'/'document-changed' 를 emit 한다(insert:field 와 동형).
+        } catch (err) {
+          console.warn('[field:edit] 누름틀 고치기 실패:', err);
         }
       };
+      dialog.onClose = restoreEditorFocus;
       dialog.showWith({
         guide: props.guide ?? '',
         memo: props.memo ?? '',
@@ -197,11 +266,11 @@ export const editCommands: CommandDef[] = [
   },
   {
     id: 'field:remove',
-    label: '누름틀 지우기(J)',
-    canExecute: (ctx) => ctx.hasDocument && ctx.inField,
+    label: t('command.field.remove.registryLabel'),
+    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode && ctx.inField,
     execute(services) {
       const ih = services.getInputHandler();
-      if (ih) (ih as any).removeCurrentField();
+      if (ih) (ih as any).confirmRemoveCurrentField?.();
     },
   },
 ];

@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -10,12 +11,27 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["chrome"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "chrome"
+    ],
     "paths": {
-      "@/*": ["./src/*"],
-      "@wasm/*": ["../pkg/*"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@wasm/*": [
+        "./node_modules/@rhwp/core/*"
+      ],
+      "@rhwp/hwpctrl/studio-plugin": [
+        "./types/rhwp-hwpctrl-plugin.d.ts"
+      ]
     }
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

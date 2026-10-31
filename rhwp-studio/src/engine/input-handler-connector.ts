@@ -1,3 +1,4 @@
+import { isBodyControl } from './picture-hit-policy.ts';
 /** 연결선 드로잉 모드 — input-handler에서 호출되는 헬퍼 함수 */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -27,7 +28,7 @@ export function findNearestConnectionPoint(
   excludeRef?: { sec: number; ppi: number; ci: number },
 ): ConnectionPoint | null {
   try {
-    const layout = this.wasm.getPageControlLayout(pageIdx);
+    const layout = { controls: this.wasm.getPageControlLayout(pageIdx).controls.filter(isBodyControl) };
     let best: ConnectionPoint | null = null;
     let bestDist = threshold;
 
@@ -76,13 +77,13 @@ export function showConnectionPointOverlay(
 ): void {
   removeConnectionPointOverlay.call(this);
 
-  const layout = this.wasm.getPageControlLayout(pageIdx);
+  const layout = { controls: this.wasm.getPageControlLayout(pageIdx).controls.filter(isBodyControl) };
   const sc = this.container.querySelector('#scroll-content');
   if (!sc) return;
   const zoom = this.viewportManager.getZoom();
   const po = this.virtualScroll.getPageOffset(pageIdx);
   const pw = this.virtualScroll.getPageWidth(pageIdx);
-  const pl = (sc.clientWidth - pw) / 2;
+  const pl = this.virtualScroll.getPageLeftResolved(pageIdx, sc.clientWidth);
 
   // 마우스 근처 개체 찾기 (bbox 내부)
   for (const ctrl of layout.controls) {
@@ -149,7 +150,7 @@ export function updateConnectorPreview(
   const zoom = this.viewportManager.getZoom();
   const po = this.virtualScroll.getPageOffset(pageIdx);
   const pw = this.virtualScroll.getPageWidth(pageIdx);
-  const pl = (sc.clientWidth - pw) / 2;
+  const pl = this.virtualScroll.getPageLeftResolved(pageIdx, sc.clientWidth);
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'connector-preview');

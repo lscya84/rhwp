@@ -1,9 +1,15 @@
 import { ModalDialog } from './dialog';
+import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { PageDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
+import { applyThroughRouter } from './dialog-apply';
+import { pageBodyViolation } from '@/core/page-body-limits';
 
+import { t as i18nText } from '../i18n/index.ts';
 const HWPUNIT_PER_MM = 7200 / 25.4; // ≈283.46
+const PAPER_PRESET_TOLERANCE_HU = 3;
 
 function hwpunitToMm(hu: number): number {
   return Math.round(hu * 25.4 / 7200 * 10) / 10; // 소수 1자리
@@ -11,6 +17,21 @@ function hwpunitToMm(hu: number): number {
 
 function mmToHwpunit(mm: number): number {
   return Math.round(mm * HWPUNIT_PER_MM);
+}
+
+function samePaperSize(a: number, b: number): boolean {
+  return Math.abs(a - b) <= PAPER_PRESET_TOLERANCE_HU;
+}
+
+function matchesPaperPreset(
+  width: number, height: number,
+  presetWidth: number, presetHeight: number,
+): boolean {
+  return (
+    samePaperSize(width, presetWidth) && samePaperSize(height, presetHeight)
+  ) || (
+    samePaperSize(width, presetHeight) && samePaperSize(height, presetWidth)
+  );
 }
 
 /** 용지 프리셋 (이름 → [폭, 길이] HWPUNIT) */
@@ -25,8 +46,8 @@ const PAPER_PRESETS: [string, number, number][] = [
 
 /** 용지 방향 SVG 아이콘 (세로/가로) */
 const ORIENT_ICONS: Record<string, string> = {
-  portrait: `<svg width="28" height="36" viewBox="0 0 28 36"><rect x="1" y="1" width="26" height="34" rx="2" fill="#fff" stroke="#748bc9" stroke-width="1.5"/><line x1="6" y1="8" x2="22" y2="8" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="12" x2="22" y2="12" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="16" x2="18" y2="16" stroke="#aab" stroke-width="1.2"/></svg>`,
-  landscape: `<svg width="36" height="28" viewBox="0 0 36 28"><rect x="1" y="1" width="34" height="26" rx="2" fill="#fff" stroke="#748bc9" stroke-width="1.5"/><line x1="6" y1="7" x2="30" y2="7" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="11" x2="30" y2="11" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="15" x2="24" y2="15" stroke="#aab" stroke-width="1.2"/></svg>`,
+  portrait: `<svg xmlns="http://www.w3.org/2000/svg" class="orient-icon orient-icon-portrait" width="28" height="36" viewBox="0 0 28 36" aria-hidden="true" focusable="false"><rect x="1" y="1" width="26" height="34" rx="2" fill="#fff" stroke="#748bc9" stroke-width="1.5"/><line x1="6" y1="8" x2="22" y2="8" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="12" x2="22" y2="12" stroke="#aab" stroke-width="1.2"/><line x1="6" y1="16" x2="18" y2="16" stroke="#aab" stroke-width="1.2"/></svg>`,
+  landscape: `<svg xmlns="http://www.w3.org/2000/svg" class="orient-icon orient-icon-landscape" width="40" height="28" viewBox="0 0 40 28" aria-hidden="true" focusable="false"><rect x="1" y="1" width="38" height="26" rx="2" fill="#fff" stroke="#748bc9" stroke-width="1.5"/><line x1="7" y1="7" x2="33" y2="7" stroke="#aab" stroke-width="1.2"/><line x1="7" y1="11" x2="33" y2="11" stroke="#aab" stroke-width="1.2"/><line x1="7" y1="15" x2="29" y2="15" stroke="#aab" stroke-width="1.2"/><line x1="7" y1="19" x2="23" y2="19" stroke="#c5cce0" stroke-width="1.1"/></svg>`,
 };
 
 /** 제본 SVG 아이콘 (한쪽/맞쪽/위로) */
@@ -51,8 +72,8 @@ export class PageSetupDialog extends ModalDialog {
   private marginInputs!: Record<string, HTMLInputElement>;
   private scopeSelect!: HTMLSelectElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number) {
-    super('편집 용지', 440);
+  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, private services?: CommandServices) {
+    super(i18nText('dialog.pageSetup.matchesPaperPreset.title'), 440);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.sectionIdx = sectionIdx;
@@ -68,7 +89,7 @@ export class PageSetupDialog extends ModalDialog {
     const body = document.createElement('div');
 
     // ── 용지 종류 ──
-    const paperSection = this.createSection('용지 종류');
+    const paperSection = this.createSection(i18nText('dialog.pageSetup.createSection.label'));
     const paperRow = this.row();
 
     this.paperSelect = document.createElement('select');
@@ -82,18 +103,18 @@ export class PageSetupDialog extends ModalDialog {
     }
     const customOpt = document.createElement('option');
     customOpt.value = 'custom';
-    customOpt.textContent = '사용자 정의';
+    customOpt.textContent = i18nText('dialog.pageSetup.customOpt.text');
     this.paperSelect.appendChild(customOpt);
 
     this.paperSelect.addEventListener('change', () => this.onPaperChange());
     paperRow.appendChild(this.paperSelect);
 
     const dimRow = this.row();
-    dimRow.appendChild(this.label('폭'));
+    dimRow.appendChild(this.label(i18nText('dialog.pageSetup.label.label')));
     this.widthInput = this.numberInput();
     dimRow.appendChild(this.widthInput);
     dimRow.appendChild(this.unit('mm'));
-    dimRow.appendChild(this.label('길이'));
+    dimRow.appendChild(this.label(i18nText('dialog.pageSetup.label.label.x8e03a1')));
     this.heightInput = this.numberInput();
     dimRow.appendChild(this.heightInput);
     dimRow.appendChild(this.unit('mm'));
@@ -107,7 +128,7 @@ export class PageSetupDialog extends ModalDialog {
     sectionsRow.className = 'page-setup-sections';
 
     // 용지 방향
-    const orientSection = this.createSection('용지 방향');
+    const orientSection = this.createSection(i18nText('dialog.pageSetup.createSection.label.x78ea53'));
     const orientRow = document.createElement('div');
     orientRow.className = 'dialog-icon-radio-group';
     this.landscapeRadios = [
@@ -120,7 +141,7 @@ export class PageSetupDialog extends ModalDialog {
     orientSection.appendChild(orientRow);
 
     // 제본
-    const bindSection = this.createSection('제본');
+    const bindSection = this.createSection(i18nText('dialog.pageSetup.createSection.label.x0a5a7c'));
     const bindRow = document.createElement('div');
     bindRow.className = 'dialog-icon-radio-group';
     this.bindingRadios = [
@@ -135,7 +156,7 @@ export class PageSetupDialog extends ModalDialog {
     body.appendChild(sectionsRow);
 
     // ── 용지 여백 ──
-    const marginSection = this.createSection('용지 여백');
+    const marginSection = this.createSection(i18nText('dialog.pageSetup.createSection.label.xebb638'));
     const marginGrid = document.createElement('div');
     marginGrid.className = 'margin-grid';
 
@@ -169,11 +190,11 @@ export class PageSetupDialog extends ModalDialog {
 
     // ── 적용 범위 ──
     const scopeRow = this.row();
-    scopeRow.appendChild(this.label('적용 범위'));
+    scopeRow.appendChild(this.label(i18nText('dialog.pageSetup.label.label.xb1824b')));
     this.scopeSelect = document.createElement('select');
     this.scopeSelect.className = 'dialog-select';
     this.scopeSelect.style.width = '120px';
-    for (const [val, text] of [['all', '문서 전체'], ['new-section', '새 구역으로']] as const) {
+    for (const [val, text] of [['all', i18nText('dialog.pageSetup.createBody.label')], ['new-section', i18nText('dialog.pageSetup.createBody.label.x3c151b')]] as const) {
       const opt = document.createElement('option');
       opt.value = val;
       opt.textContent = text;
@@ -186,7 +207,7 @@ export class PageSetupDialog extends ModalDialog {
     return body;
   }
 
-  protected onConfirm(): void {
+  protected onConfirm(): boolean {
     // mm → HWPUNIT 변환
     const landscape = this.landscapeRadios[1].checked;
     let w = mmToHwpunit(parseFloat(this.widthInput.value) || 0);
@@ -209,10 +230,25 @@ export class PageSetupDialog extends ModalDialog {
       binding: parseInt(this.bindingRadios.find(r => r.checked)?.value ?? '0'),
     };
 
-    const result = this.wasm.setPageDef(this.sectionIdx, newDef);
-    if (result.ok) {
-      this.eventBus.emit('document-changed');
+    // [#4973] 본문이 소멸하는 여백은 받지 않는다. 렌더러가 용지 5% 여백으로 폴백해
+    // (Rust model/page.rs [Task #1583]) 화면은 멀쩡한데 저장값만 쓸 수 없게 되므로,
+    // 눈금자 핀이 드래그를 가두는 것과 같은 한도를 입력 자리에서도 건다.
+    const violation = pageBodyViolation(newDef);
+    if (violation) {
+      alert(violation);
+      return false;
     }
+
+    // [편집 용지 이관] 쪽 정의 변경을 snapshot 으로 라우팅해 undo 가능(#2077 수식 속성 동형).
+    // services 미주입 환경(구 호출부)에서만 직접 적용 fallback.
+    const apply = () => this.wasm.setPageDef(this.sectionIdx, newDef);
+    return applyThroughRouter({
+      services: this.services,
+      label: 'PageSetupDialog',
+      operationType: 'pageSetup',
+      operation: (ih) => { apply(); return ih.getCursorPosition(); },
+      fallback: () => { if (apply().ok) this.eventBus.emit('document-changed'); },
+    });
   }
 
   private populateFields(): void {
@@ -224,7 +260,7 @@ export class PageSetupDialog extends ModalDialog {
     if (pd.landscape) { [w, h] = [h, w]; }
 
     const matched = PAPER_PRESETS.find(([, pw, ph]) =>
-      (pw === pd.width && ph === pd.height) || (pw === pd.height && ph === pd.width)
+      matchesPaperPreset(pd.width, pd.height, pw, ph)
     );
     this.paperSelect.value = matched ? matched[0] : 'custom';
     this.widthInput.value = hwpunitToMm(w).toFixed(1);
@@ -317,6 +353,18 @@ export class PageSetupDialog extends ModalDialog {
     inp.className = 'dialog-input';
     inp.step = '0.1';
     inp.min = '0';
+    // HTML min 속성은 .value 를 자동으로 clamp 하지 않는다(브라우저는 checkValidity()에서만
+    // 검사) — 음수·비정상 값이 그대로 parseFloat 되어 wasm.setPageDef 로 전달되는 것을 막는다.
+    // (#2838 번호매기기 시작 번호 clamp 누락과 동일 패턴)
+    inp.addEventListener('change', () => {
+      if (inp.value === '') return;
+      const min = inp.min !== '' ? parseFloat(inp.min) : -Infinity;
+      const max = inp.max !== '' ? parseFloat(inp.max) : Infinity;
+      const v = parseFloat(inp.value);
+      if (!Number.isFinite(v)) return;
+      const clamped = Math.min(max, Math.max(min, v));
+      if (clamped !== v) inp.value = String(clamped);
+    });
     return inp;
   }
 
@@ -344,7 +392,7 @@ export class PageSetupDialog extends ModalDialog {
 
     const iconWrap = document.createElement('span');
     iconWrap.className = 'icon-radio-icon';
-    iconWrap.innerHTML = svgHtml;
+    appendSvgMarkup(iconWrap, svgHtml);
 
     const text = document.createElement('span');
     text.className = 'icon-radio-text';

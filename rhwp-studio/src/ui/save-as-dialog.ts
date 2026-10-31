@@ -1,18 +1,36 @@
 /**
  * 다른 이름으로 저장 대화상자
  *
- * 새 문서 저장 시 파일 이름을 입력받는다.
+ * 새 문서 저장 시 파일 이름과 선택 암호 설정 요청을 받는다.
+ * 이미 보호된 문서는 기본 확인이 암호를 계승하고, 평문은 명시적 선택만 허용한다 (#5991).
  * showSaveAs() 헬퍼로 간단히 사용 가능.
  */
 import { ModalDialog } from './dialog';
+import { fileNameForFormat, type SaveFormat } from '@/command/save-target';
+
+import { t } from '../i18n/index.ts';
+export interface SaveAsDialogResult {
+  fileName: string;
+  configurePassword: boolean;
+}
+
+export interface SaveAsDialogOptions {
+  allowPassword?: boolean;
+  inheritPassword?: boolean;
+}
 
 class SaveAsDialog extends ModalDialog {
   private defaultName: string;
   private input!: HTMLInputElement;
-  private resolve!: (value: string | null) => void;
+  private resolve!: (value: SaveAsDialogResult | null) => void;
 
-  constructor(defaultName: string) {
-    super('다른 이름으로 저장', 380);
+  constructor(
+    defaultName: string,
+    private readonly format: SaveFormat,
+    private readonly allowPassword: boolean,
+    private readonly inheritPassword: boolean,
+  ) {
+    super(t('dialog.saveAs.title'), 380);
     this.defaultName = defaultName;
   }
 
@@ -21,7 +39,7 @@ class SaveAsDialog extends ModalDialog {
     body.style.padding = '16px 20px';
 
     const label = document.createElement('label');
-    label.textContent = '파일 이름(N):';
+    label.textContent = t('dialog.saveAs.label.text');
     label.style.display = 'block';
     label.style.marginBottom = '6px';
     label.style.fontSize = '13px';
@@ -39,20 +57,69 @@ class SaveAsDialog extends ModalDialog {
     this.input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        this.onConfirm();
-        this.hide();
+        if (this.onConfirm()) this.hide();
       }
     });
     body.appendChild(this.input);
 
+    if (this.inheritPassword) {
+      const note = document.createElement('p');
+      note.style.margin = '12px 0 0';
+      note.style.fontSize = '12px';
+      note.style.lineHeight = '1.5';
+      note.textContent =
+        t('dialog.saveAs.note.text');
+      body.appendChild(note);
+    }
+
+    if (this.allowPassword) {
+      const passwordButton = document.createElement('button');
+      passwordButton.type = 'button';
+      passwordButton.className = 'dialog-btn';
+      passwordButton.textContent = t('dialog.saveAs.passwordButton.text');
+      passwordButton.style.marginTop = '12px';
+      passwordButton.addEventListener('click', () => {
+        const value = this.confirmValue();
+        if (value === null) return;
+        this.resolve({ fileName: value, configurePassword: true });
+        this.hide();
+      });
+      body.appendChild(passwordButton);
+
+      if (this.inheritPassword) {
+        const plaintextButton = document.createElement('button');
+        plaintextButton.type = 'button';
+        plaintextButton.className = 'dialog-btn';
+        plaintextButton.textContent = t('dialog.saveAs.plaintextButton.text');
+        plaintextButton.style.marginTop = '8px';
+        plaintextButton.addEventListener('click', () => {
+          const value = this.confirmValue();
+          if (value === null) return;
+          this.resolve({ fileName: value, configurePassword: false });
+          this.hide();
+        });
+        body.appendChild(plaintextButton);
+      }
+    }
+
     return body;
   }
 
-  protected onConfirm(): void {
+  private confirmValue(): string | null {
     const name = this.input.value.trim();
-    if (!name) return;
-    const fileName = name.endsWith('.hwp') ? name : name + '.hwp';
-    this.resolve(fileName);
+    if (!name) {
+      this.input.focus();
+      return null;
+    }
+    return fileNameForFormat(name, this.format);
+  }
+
+  protected onConfirm(): boolean {
+    const fileName = this.confirmValue();
+    if (fileName === null) return false;
+    // 보호된 문서의 기본 확인은 암호를 계승한다. 평문은 `암호 없이 저장`만.
+    this.resolve({ fileName, configurePassword: this.inheritPassword });
+    return true;
   }
 
   override hide(): void {
@@ -60,10 +127,10 @@ class SaveAsDialog extends ModalDialog {
     super.hide();
   }
 
-  showAsync(): Promise<string | null> {
+  showAsync(): Promise<SaveAsDialogResult | null> {
     return new Promise((resolve) => {
       let resolved = false;
-      this.resolve = (v: string | null) => {
+      this.resolve = (v: SaveAsDialogResult | null) => {
         if (!resolved) {
           resolved = true;
           resolve(v);
@@ -78,7 +145,21 @@ class SaveAsDialog extends ModalDialog {
   }
 }
 
-/** 파일 이름 입력 대화상자를 표시하고 사용자가 입력한 파일 이름을 반환한다. 취소 시 null. */
-export function showSaveAs(defaultName: string): Promise<string | null> {
-  return new SaveAsDialog(defaultName).showAsync();
+/**
+ * 파일 이름 입력 대화상자를 표시한다. HWP/HWPX에서 `allowPassword`를 켜면 사용자가
+ * `암호 설정...`을 선택해 다음 암호 입력 대화상자로 진행할 수 있다.
+ * `inheritPassword`가 켜지면 기본 확인이 암호 입력으로 이어지고, 평문은
+ * `암호 없이 저장`을 눌러야 한다 (#5991).
+ */
+export function showSaveAs(
+  defaultName: string,
+  format: SaveFormat = 'hwp',
+  options: SaveAsDialogOptions = {},
+): Promise<SaveAsDialogResult | null> {
+  return new SaveAsDialog(
+    defaultName,
+    format,
+    options.allowPassword === true,
+    options.inheritPassword === true,
+  ).showAsync();
 }
