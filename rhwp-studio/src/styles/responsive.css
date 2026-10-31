@@ -189,7 +189,7 @@
 /* ─── 가상 키보드 대응 ───────────────────────────────── */
 @media (max-height: 500px) and (max-width: 767px) {
   /* 키보드가 올라온 상태: 도구 영역 최소화 */
-  #menu-bar { display: none; }
+  /* Filemaru embeds can be short even without a keyboard; keep commands reachable. */
   #style-bar { display: none; }
   #status-bar { display: none; }
 }
